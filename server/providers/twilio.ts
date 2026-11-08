@@ -1,6 +1,16 @@
 import twilio from "twilio";
-import { env } from "../../lib/env";
+import type { TwilioCredentials } from "../../lib/twilio";
 import type { Telephony } from "../core/ports";
+import {
+  environmentTwilioCredentials,
+  twilioConnectionError,
+} from "./twilio-settings";
+export const twilioClient = (credentials: TwilioCredentials): twilio.Twilio =>
+  twilio(credentials.accountSid, credentials.authToken, {
+    autoRetry: false,
+    timeout: 15000,
+    logLevel: "error",
+  });
 export const escapeXml = (v: string): string =>
   v
     .replace(/&/g, "&amp;")
@@ -8,19 +18,25 @@ export const escapeXml = (v: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
-export const createTwilioTelephony = (): Telephony => {
-  const client = () =>
-    twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
-      autoRetry: false,
-      timeout: 15000,
-    });
+export const createTwilioTelephony = (
+  credentials = environmentTwilioCredentials,
+  makeClient = twilioClient,
+): Telephony => {
+  const client = () => makeClient(credentials());
   return {
-    listNumbers: async () =>
-      (await client().incomingPhoneNumbers.list({ limit: 100 })).map((n) => ({
-        sid: n.sid,
-        phoneNumber: n.phoneNumber,
-        label: n.friendlyName,
-      })),
+    listNumbers: async () => {
+      try {
+        return (
+          await client().incomingPhoneNumbers.list({ pageSize: 1000 })
+        ).map((n) => ({
+          sid: n.sid,
+          phoneNumber: n.phoneNumber,
+          label: n.friendlyName,
+        }));
+      } catch (error) {
+        throw twilioConnectionError(error);
+      }
+    },
     routeInbound: async (sid, url, statusUrl) => {
       await client().incomingPhoneNumbers(sid).update({
         voiceUrl: url,
@@ -64,9 +80,12 @@ export const createTwilioTelephony = (): Telephony => {
     endCall: async (sid) => {
       await client().calls(sid).update({ status: "completed" });
     },
-    validateWebhook: (url, params, signature) =>
-      !!env.TWILIO_AUTH_TOKEN &&
-      twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, params),
+    validateWebhook: (url, params, signature) => {
+      const { authToken } = credentials();
+      return (
+        !!authToken && twilio.validateRequest(authToken, signature, url, params)
+      );
+    },
     streamTwiml: (url, params) =>
       `<Response><Connect><Stream url="${escapeXml(url)}">${Object.entries(
         params,
@@ -81,51 +100,44 @@ export const createTwilioTelephony = (): Telephony => {
   };
 };
 
-export const createTwilioWarmTelephony =
-  (): import("../transfers/types").WarmTransferTelephony => {
-    const client = () =>
-      twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
-        autoRetry: false,
-        timeout: 15000,
+export const createTwilioWarmTelephony = (
+  credentials = environmentTwilioCredentials,
+  makeClient = twilioClient,
+): import("../transfers/types").WarmTransferTelephony => {
+  const client = () => makeClient(credentials());
+  return {
+    redirectCall: async (sid, url) => {
+      await client().calls(sid).update({ url, method: "POST" });
+    },
+    dialOperator: async ({ to, from, url, statusUrl, timeoutSeconds }) => {
+      const call = await client().calls.create({
+        to,
+        from,
+        url,
+        method: "POST",
+        timeout: timeoutSeconds,
+        statusCallback: statusUrl,
+        statusCallbackMethod: "POST",
+        statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
       });
-    return {
-      redirectCall: async (sid, url) => {
-        await client().calls(sid).update({ url, method: "POST" });
-      },
-      dialOperator: async ({ to, from, url, statusUrl, timeoutSeconds }) => {
-        const call = await client().calls.create({
-          to,
-          from,
-          url,
-          method: "POST",
-          timeout: timeoutSeconds,
-          statusCallback: statusUrl,
-          statusCallbackMethod: "POST",
-          statusCallbackEvent: [
-            "initiated",
-            "ringing",
-            "answered",
-            "completed",
-          ],
-        });
-        return call.sid;
-      },
-      endCall: async (sid) => {
-        await client().calls(sid).update({ status: "completed" });
-      },
-      callStatus: async (sid) => (await client().calls(sid).fetch()).status,
-      conferenceMembers: async (room) => {
-        const conference = (
-          await client().conferences.list({ friendlyName: room, limit: 10 })
-        ).find((c) => c.status !== "completed");
-        if (!conference) return undefined;
-        const participants = await client()
-          .conferences(conference.sid)
-          .participants.list({ limit: 10 });
-        return {
-          sid: conference.sid,
-          callSids: participants.map((p) => p.callSid),
-        };
-      },
-    };
+      return call.sid;
+    },
+    endCall: async (sid) => {
+      await client().calls(sid).update({ status: "completed" });
+    },
+    callStatus: async (sid) => (await client().calls(sid).fetch()).status,
+    conferenceMembers: async (room) => {
+      const conference = (
+        await client().conferences.list({ friendlyName: room, limit: 10 })
+      ).find((c) => c.status !== "completed");
+      if (!conference) return undefined;
+      const participants = await client()
+        .conferences(conference.sid)
+        .participants.list({ limit: 10 });
+      return {
+        sid: conference.sid,
+        callSids: participants.map((p) => p.callSid),
+      };
+    },
   };
+};

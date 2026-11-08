@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   assistantSchema,
   type ToolConfig,
@@ -10,6 +10,11 @@ import { AssistantEditor } from "./components/assistant-editor";
 import { ToolEditor } from "./components/tool-editor";
 import { CallsPanel } from "./components/calls-panel";
 import { api } from "./components/api";
+import { TwilioConnection } from "./components/twilio-connection";
+import type {
+  TwilioConnectionResult,
+  TwilioConnectionStatus,
+} from "../lib/twilio";
 const sections = ["Assistants", "Tools", "Phone numbers", "Calls"] as const;
 export default function Page() {
   const [section, setSection] =
@@ -25,28 +30,52 @@ export default function Page() {
     [saving, setSaving] = useState(false),
     [missing, setMissing] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false);
+  const [twilio, setTwilio] = useState<TwilioConnectionStatus | null>(null);
+  const [loadingNumbers, setLoadingNumbers] = useState(false);
+  const [preferredFrom, setPreferredFrom] = useState("");
+  const numbersRequest = useRef(0);
   const onError = useCallback((s: string) => setError(s), []);
   const loadNumbers = useCallback(async () => {
+    const request = ++numbersRequest.current;
+    setLoadingNumbers(true);
+    setError("");
     try {
-      setNumbers(await api<PhoneNumberView[]>("/numbers"));
+      const numbers = await api<PhoneNumberView[]>("/numbers");
+      if (request === numbersRequest.current) setNumbers(numbers);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Cannot load numbers.");
+      if (request === numbersRequest.current)
+        setError(e instanceof Error ? e.message : "Cannot load numbers.");
+    } finally {
+      if (request === numbersRequest.current) setLoadingNumbers(false);
     }
   }, []);
+  const connected = (result: TwilioConnectionResult) => {
+    numbersRequest.current++;
+    setLoadingNumbers(false);
+    setNumbers(result.numbers);
+    setTwilio(result.connection);
+    setMissing(result.missing);
+    setPreferredFrom("");
+    setError("");
+    setNotice(
+      `Twilio connected. ${result.numbers.length} phone ${result.numbers.length === 1 ? "number" : "numbers"} loaded.`,
+    );
+  };
   useEffect(() => {
     void Promise.all([
       api<AgentConfig[]>("/agents"),
       api<ToolConfig[]>("/tools"),
-      api<{ missing: string[] }>("/health"),
+      api<{ missing: string[]; twilio: TwilioConnectionStatus }>("/health"),
     ])
       .then(([a, t, h]) => {
         setAgents(a);
         setTools(t);
         setMissing(h.missing);
+        setTwilio(h.twilio);
         setSelected(a[0]?.id ?? "");
         setDraft(a[0] ?? null);
         setLoaded(true);
-        if (!h.missing.some((n) => n.startsWith("TWILIO"))) void loadNumbers();
+        if (h.twilio.configured) void loadNumbers();
       })
       .catch((e) => setError(e.message));
   }, [loadNumbers]);
@@ -205,8 +234,9 @@ export default function Page() {
                 ))}
               </ul>
               <p>
-                Set credentials securely on the server, then restart it. Each
-                assistant also needs an ElevenLabs voice ID.
+                Connect Twilio in Phone numbers. Set the remaining provider
+                credentials and public callback URL on the server, then restart
+                it. Each assistant also needs an ElevenLabs voice ID.
               </p>
             </details>
           )}
@@ -314,58 +344,91 @@ export default function Page() {
               </div>
             ))}
           {section === "Phone numbers" && (
-            <section>
-              <div className="section-head">
-                <h2>Your Twilio numbers</h2>
-                <button className="ghost" onClick={() => void loadNumbers()}>
-                  Refresh numbers
-                </button>
-              </div>
-              <p className="hint">
-                Assigning an assistant updates the number's Twilio voice
-                webhook. These numbers can also be used for outbound calls.
-              </p>
-              {!numbers.length ? (
-                <div className="empty">
-                  Connect your Twilio account, then refresh to load numbers.
+            <div className="fields">
+              {loaded && (
+                <TwilioConnection
+                  key={twilio?.accountSid ?? "new"}
+                  connection={twilio}
+                  onConnected={connected}
+                />
+              )}
+              <section>
+                <div className="section-head">
+                  <h2>Your Twilio numbers</h2>
+                  <button
+                    className="ghost"
+                    disabled={!twilio?.configured || loadingNumbers}
+                    onClick={() => void loadNumbers()}
+                  >
+                    {loadingNumbers ? "Loading numbers…" : "Refresh numbers"}
+                  </button>
                 </div>
-              ) : (
-                numbers.map((n) => (
-                  <div className="number-row" key={n.sid}>
-                    <div>
-                      <strong>{n.phoneNumber}</strong>
-                      <small>{n.label}</small>
-                    </div>
-                    <label>
-                      Inbound assistant
-                      <select
-                        value={n.agentId ?? ""}
-                        onChange={(e) => {
-                          if (e.target.value)
-                            void api(`/numbers/${n.sid}/assign`, "POST", {
-                              agentId: e.target.value,
-                            })
-                              .then(() => loadNumbers())
-                              .catch((e) => setError(e.message));
+                <p className="hint">
+                  Assigning an assistant updates the number's Twilio voice
+                  webhook. These numbers can also be used for outbound calls.
+                </p>
+                {!numbers.length ? (
+                  <div className="empty">
+                    {loadingNumbers
+                      ? "Loading your Twilio phone numbers…"
+                      : twilio?.configured
+                        ? "No phone numbers found. Add a number in your Twilio Console, then refresh."
+                        : "Connect your Twilio account above to load its phone numbers."}
+                  </div>
+                ) : (
+                  numbers.map((n) => (
+                    <div className="number-row" key={n.sid}>
+                      <div>
+                        <strong>{n.phoneNumber}</strong>
+                        <small>{n.label}</small>
+                      </div>
+                      <label>
+                        Inbound assistant
+                        <select
+                          value={n.agentId ?? ""}
+                          onChange={(e) => {
+                            if (e.target.value)
+                              void api(`/numbers/${n.sid}/assign`, "POST", {
+                                agentId: e.target.value,
+                              })
+                                .then(() => loadNumbers())
+                                .catch((e) => setError(e.message));
+                          }}
+                        >
+                          <option value="" disabled>
+                            Choose assistant
+                          </option>
+                          {agents.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="ghost"
+                        onClick={() => {
+                          setPreferredFrom(n.phoneNumber);
+                          setSection("Calls");
+                          setError("");
+                          setNotice("");
                         }}
                       >
-                        <option value="" disabled>
-                          Choose assistant
-                        </option>
-                        {agents.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                ))
-              )}
-            </section>
+                        Make a call
+                      </button>
+                    </div>
+                  ))
+                )}
+              </section>
+            </div>
           )}
           {section === "Calls" && (
-            <CallsPanel agents={agents} numbers={numbers} onError={onError} />
+            <CallsPanel
+              agents={agents}
+              numbers={numbers}
+              onError={onError}
+              initialFrom={preferredFrom}
+            />
           )}
         </main>
         <footer>AI Twin · Voice calling workspace</footer>

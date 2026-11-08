@@ -28,6 +28,11 @@ import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
 import type { ToolRegistry } from "../tools/registry";
 import { voicemailAction } from "../calls/voicemail";
+import {
+  environmentTwilioCredentials,
+  twilioConnectionStatus,
+  type TwilioSettings,
+} from "../providers/twilio-settings";
 export interface HttpDeps {
   store: AgentStore;
   registry: CallRegistry;
@@ -39,6 +44,7 @@ export interface HttpDeps {
   listVoices: () => Promise<VoiceOption[]>;
   pendingCalls: number;
   warmTransfers?: WarmTransferCoordinator;
+  twilioSettings?: TwilioSettings;
 }
 const statusMap: Record<string, CallStatus> = {
   queued: "initiating",
@@ -85,9 +91,20 @@ const onError = (
   });
 };
 const capacity = (d: HttpDeps): boolean =>
+  !!d.twilioSettings?.isUpdating ||
   d.pendingCalls + d.registry.activeCount >= env.MAX_CONCURRENT_CALLS;
-const requireReady = (voiceId: string): void => {
-  const missing = missingCallConfiguration();
+const missingConfiguration = (d: HttpDeps): string[] =>
+  missingCallConfiguration(d.twilioSettings?.current());
+const requireTwilioStable = (d: HttpDeps): void => {
+  if (d.twilioSettings?.isUpdating)
+    throw new HttpError(
+      409,
+      "Twilio credentials are being updated. Try again when the connection finishes.",
+    );
+};
+const requireReady = (d: HttpDeps, voiceId: string): void => {
+  requireTwilioStable(d);
+  const missing = missingConfiguration(d);
   if (!voiceId) missing.push("Assistant voice ID");
   if (missing.length)
     throw new HttpError(
@@ -112,16 +129,43 @@ export const createAdminApp = (d: HttpDeps): Express => {
     next();
   });
   app.get("/api/health", (_req, res) =>
-    res.json({
+    res.set("Cache-Control", "no-store").json({
       status: "ok",
-      callingReady: missingCallConfiguration().length === 0,
-      missing: missingCallConfiguration(),
+      callingReady: missingConfiguration(d).length === 0,
+      missing: missingConfiguration(d),
+      twilio:
+        d.twilioSettings?.status() ??
+        twilioConnectionStatus(environmentTwilioCredentials(), "environment"),
       providers: {
         telephony: "twilio",
         transcriber: "deepgram",
         voice: "11labs",
         model: "openai",
       },
+    }),
+  );
+  app.put(
+    "/api/integrations/twilio",
+    handle(async (req, res) => {
+      res.set("Cache-Control", "no-store");
+      if (!d.twilioSettings)
+        throw new HttpError(503, "Twilio connection settings are unavailable.");
+      const numbers = await d.twilioSettings.connect(
+        req.body,
+        () =>
+          registry.activeCount > 0 ||
+          d.pendingCalls > 0 ||
+          d.pool.size > 0 ||
+          !!d.warmTransfers?.hasActiveTransfers,
+      );
+      return res.json({
+        connection: d.twilioSettings.status(),
+        numbers: numbers.map((n) => ({
+          ...n,
+          agentId: store.agentForNumber(n.phoneNumber)?.id ?? null,
+        })),
+        missing: missingConfiguration(d),
+      });
     }),
   );
   app.get("/api/agents", (_req, res) => res.json(store.list()));
@@ -181,10 +225,13 @@ export const createAdminApp = (d: HttpDeps): Express => {
   app.get(
     "/api/numbers",
     handle(async (_req, res) => {
-      if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN)
+      requireTwilioStable(d);
+      const credentials =
+        d.twilioSettings?.current() ?? environmentTwilioCredentials();
+      if (!credentials.accountSid || !credentials.authToken)
         throw new HttpError(
           503,
-          "Configure Twilio credentials to load phone numbers.",
+          "Connect your Twilio account to load phone numbers.",
         );
       const list: PhoneNumberView[] = (await telephony.listNumbers()).map(
         (n) => ({
@@ -199,18 +246,23 @@ export const createAdminApp = (d: HttpDeps): Express => {
     "/api/numbers/:sid/assign",
     handle(async (req, res) => {
       const agent = store.get(assignRequestSchema.parse(req.body).agentId);
-      requireReady(agent.voiceId);
-      const n = (await telephony.listNumbers()).find(
-        (n) => n.sid === req.params.sid,
-      );
-      if (!n) throw new HttpError(404, "Twilio number not found.");
-      await telephony.routeInbound(
-        n.sid,
-        `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
-        `${env.PUBLIC_BASE_URL}/twilio/status`,
-      );
-      store.assign(n.phoneNumber, agent.id);
-      return res.json({ ...n, agentId: agent.id });
+      requireReady(d, agent.voiceId);
+      d.pendingCalls++;
+      try {
+        const n = (await telephony.listNumbers()).find(
+          (n) => n.sid === req.params.sid,
+        );
+        if (!n) throw new HttpError(404, "Twilio number not found.");
+        await telephony.routeInbound(
+          n.sid,
+          `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
+          `${env.PUBLIC_BASE_URL}/twilio/status`,
+        );
+        store.assign(n.phoneNumber, agent.id);
+        return res.json({ ...n, agentId: agent.id });
+      } finally {
+        d.pendingCalls--;
+      }
     }),
   );
   app.get("/api/calls", (_req, res) => res.json(registry.list()));
@@ -219,7 +271,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
     handle(async (req, res) => {
       const input = callRequestSchema.parse(req.body),
         agent = store.get(input.agentId);
-      requireReady(agent.voiceId);
+      requireReady(d, agent.voiceId);
       if (capacity(d))
         throw new HttpError(503, "Concurrent call limit reached.");
       d.pendingCalls++;
@@ -235,14 +287,11 @@ export const createAdminApp = (d: HttpDeps): Express => {
             "Assign or select a Twilio phone number first.",
           );
         if (
-          input.from &&
-          !(await telephony.listNumbers()).some(
-            (n) => n.phoneNumber === input.from,
-          )
+          !(await telephony.listNumbers()).some((n) => n.phoneNumber === from)
         )
           throw new HttpError(
             400,
-            "Select a number owned by your Twilio account.",
+            "Select a number owned by your connected Twilio account.",
           );
         contexts.set(callId, {
           agent,
@@ -377,7 +426,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
       if (
         !agent ||
         capacity(d) ||
-        missingCallConfiguration().length ||
+        missingConfiguration(d).length ||
         !agent.voiceId
       )
         return res.send(

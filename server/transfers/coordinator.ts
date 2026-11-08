@@ -74,6 +74,9 @@ export class WarmTransferCoordinator {
   private now(): number {
     return this.deps.now?.() ?? Date.now();
   }
+  get hasActiveTransfers(): boolean {
+    return [...this.records.values()].some((r) => !TERMINAL.has(r.phase));
+  }
   get(id: string): WarmTransferRecord {
     const record = this.records.get(id);
     if (!record) throw new HttpError(404, "Warm transfer not found.");

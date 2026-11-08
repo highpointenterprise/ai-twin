@@ -26,6 +26,8 @@ import { CallRegistry } from "./store/calls";
 import { ContextStore } from "./store/contexts";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
+import { TwilioCredentialStore } from "./store/twilio-credentials";
+import { TwilioSettings } from "./providers/twilio-settings";
 const store = new AgentStore(
   assistantSchema.parse({
     name: "Luna",
@@ -42,9 +44,13 @@ const tools = new ToolRegistry(join(env.DATA_DIR, "tools.json"));
 const pool = new SessionPool(env.MAX_CONCURRENT_CALLS),
   traces = new TraceStore(),
   contexts = new ContextStore();
-const telephony = createTwilioTelephony();
+const twilioSettings = new TwilioSettings(
+  new TwilioCredentialStore(env.DATA_DIR),
+  (credentials) => createTwilioTelephony(() => credentials).listNumbers(),
+);
+const telephony = createTwilioTelephony(twilioSettings.current);
 const warmTransfers = new WarmTransferCoordinator({
-  telephony: createTwilioWarmTelephony(),
+  telephony: createTwilioWarmTelephony(twilioSettings.current),
   contexts,
   registry,
   traces,
@@ -82,6 +88,7 @@ const deps: HttpDeps = {
   listVoices: listElevenLabsVoices,
   pendingCalls: 0,
   warmTransfers,
+  twilioSettings,
 };
 const publicServer = createServer(createPublicApp(deps));
 const media = attachMediaServer(publicServer, {
@@ -102,8 +109,8 @@ const admin = createAdminApp(deps).listen(env.ADMIN_PORT, "127.0.0.1", () =>
   logEvent("server.admin_listening", { port: env.ADMIN_PORT }),
 );
 logEvent("configuration", {
-  calling_ready: !missingCallConfiguration().length,
-  missing: missingCallConfiguration().join(", "),
+  calling_ready: !missingCallConfiguration(twilioSettings.current()).length,
+  missing: missingCallConfiguration(twilioSettings.current()).join(", "),
 });
 void warmTransfers.recoverAfterRestart();
 const shutdown = () => {

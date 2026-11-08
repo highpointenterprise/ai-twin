@@ -5,3 +5,5 @@ next-env.d.ts
 
 .data
 *.tsbuildinfo
+**/twilio-credentials.enc.json
+**/.credentials.key
