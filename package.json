@@ -3,16 +3,22 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n web,voice -c cyan,magenta \"next dev\" \"tsx watch server/index.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "next build",
+    "start": "concurrently -k -n web,voice \"next start\" \"tsx server/index.ts\""
   },
   "dependencies": {
+    "ajv": "^8.17.1",
     "dotenv": "^16.4.7",
     "express": "^4.22.3",
+    "https-proxy-agent": "^7.0.6",
     "next": "^15.1.0",
     "openai": "^4.77.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "twilio": "^5.4.0",
+    "undici": "^7.16.0",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },

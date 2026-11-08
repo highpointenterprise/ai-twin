@@ -17,11 +17,18 @@ export const createRealtimeSessionFactory =
     let lastMark = "";
 
     const client = connect(
-      { instructions: buildSystemPrompt(agent, brief), voice: agent.realtimeVoice, model: env.OPENAI_REALTIME_MODEL },
+      {
+        instructions: buildSystemPrompt(agent, brief),
+        voice: agent.realtimeVoice,
+        model: env.OPENAI_REALTIME_MODEL,
+      },
       {
         onReady: () => {
-          trace.log("realtime.ready", { model: env.OPENAI_REALTIME_MODEL, voice: agent.realtimeVoice });
-          client.say(agent.greeting);
+          trace.log("realtime.ready", {
+            model: env.OPENAI_REALTIME_MODEL,
+            voice: agent.realtimeVoice,
+          });
+          client.say(agent.firstMessage);
         },
         onAudio: (payload, id) => {
           if (id !== itemId) {
@@ -35,11 +42,15 @@ export const createRealtimeSessionFactory =
             }
           }
           speaking = true;
-          receivedMs += Math.floor((payload.length * 3) / 4 / MULAW_BYTES_PER_MS);
+          receivedMs += Math.floor(
+            (payload.length * 3) / 4 / MULAW_BYTES_PER_MS,
+          );
           send({ event: "media", streamSid, media: { payload } });
         },
         onUserSpeechStart: () => {
-          trace.log("realtime.user_speech_started", { agent_speaking: speaking });
+          trace.log("realtime.user_speech_started", {
+            agent_speaking: speaking,
+          });
           if (!speaking) return;
           speaking = false;
           const playedMs = Math.min(Date.now() - responseStartedAt, receivedMs);

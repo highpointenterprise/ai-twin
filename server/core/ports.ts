@@ -1,3 +1,4 @@
+import type { ToolConfig } from "../../lib/config";
 import type { AgentConfig } from "../../lib/types";
 import type { CallTrace } from "../observability/trace";
 
@@ -15,7 +16,10 @@ export interface Transcriber {
   close: () => void;
 }
 
-export type TranscriberFactory = (events: TranscriberEvents) => Transcriber;
+export type TranscriberFactory = (
+  events: TranscriberEvents,
+  config?: AgentConfig["transcriber"],
+) => Transcriber;
 
 export interface SpeechSynthesizer {
   push: (text: string) => Promise<void>;
@@ -23,21 +27,55 @@ export interface SpeechSynthesizer {
   close: () => void;
 }
 
-export type SynthesizerFactory = (voiceId: string, onAudio: (mulawBase64: string) => void) => SpeechSynthesizer;
+export type SynthesizerFactory = (
+  voiceId: string,
+  onAudio: (mulawBase64: string) => void,
+  config?: AgentConfig["voice"],
+) => SpeechSynthesizer;
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
   content: string;
 }
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+export interface ModelTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+export type ModelDelta =
+  | { type: "text"; text: string }
+  | { type: "tool-call"; call: ToolCall };
+export interface ToolOutcome {
+  result: unknown;
+  terminal?: boolean;
+  waitForUser?: boolean;
+}
+export interface ToolContext {
+  callSid: string;
+  signal: AbortSignal;
+  speak: (text: string) => Promise<void>;
+  playAudio: (audio: Buffer) => Promise<void>;
+}
 export interface ModelRequest {
   messages: ChatMessage[];
+  tools?: ModelTool[];
   model: string;
   temperature: number;
 }
 
 export interface LanguageModel {
-  stream: (request: ModelRequest, signal: AbortSignal) => AsyncIterable<string>;
+  stream: (
+    request: ModelRequest,
+    signal: AbortSignal,
+  ) => AsyncIterable<ModelDelta>;
   complete: (request: ModelRequest) => Promise<string>;
 }
 
@@ -65,7 +103,10 @@ export interface RealtimeClient {
   close: () => void;
 }
 
-export type RealtimeFactory = (config: RealtimeConfig, events: RealtimeEvents) => RealtimeClient;
+export type RealtimeFactory = (
+  config: RealtimeConfig,
+  events: RealtimeEvents,
+) => RealtimeClient;
 
 export interface TelephonyNumber {
   sid: string;
@@ -75,9 +116,30 @@ export interface TelephonyNumber {
 
 export interface Telephony {
   listNumbers: () => Promise<TelephonyNumber[]>;
-  routeInbound: (numberSid: string, voiceUrl: string, statusUrl: string) => Promise<void>;
-  placeCall: (request: { to: string; from: string; twiml: string; statusUrl: string }) => Promise<string>;
-  validateWebhook: (url: string, params: Record<string, string>, signature: string) => boolean;
+  routeInbound: (
+    numberSid: string,
+    voiceUrl: string,
+    statusUrl: string,
+  ) => Promise<void>;
+  placeCall: (request: {
+    to: string;
+    from: string;
+    url: string;
+    statusUrl: string;
+    voicemail: AgentConfig["voicemailDetection"];
+  }) => Promise<string>;
+  transferCall: (
+    sid: string,
+    destination: { number: string; extension: string },
+    timeout: number,
+    statusUrl: string,
+  ) => Promise<void>;
+  endCall: (sid: string) => Promise<void>;
+  validateWebhook: (
+    url: string,
+    params: Record<string, string>,
+    signature: string,
+  ) => boolean;
   streamTwiml: (wsUrl: string, params: Record<string, string>) => string;
   rejectTwiml: (message: string) => string;
 }
@@ -86,15 +148,27 @@ export interface EngineDeps {
   transcribe: TranscriberFactory;
   synthesize: SynthesizerFactory;
   model: LanguageModel;
+  executeTool?: (
+    tool: ToolConfig,
+    call: ToolCall,
+    context: ToolContext,
+  ) => Promise<ToolOutcome>;
+  endCall?: (sid: string, reason: string) => Promise<void>;
+  onScreening?: (sid: string) => void;
 }
 
 export interface ConversationSession {
   pushAudio: (mulawBase64: string) => void;
+  handleDtmf?: (digit: string) => void;
   handleMark: (name: string) => void;
   close: () => void;
 }
 
 export interface SessionInit {
+  callSid: string;
+  purpose?: "conversation" | "voicemail";
+  direction?: "inbound" | "outbound";
+  tools?: ToolConfig[];
   agent: AgentConfig;
   brief: string;
   streamSid: string;
