@@ -1,3 +1,4 @@
+import type { ChatMessage } from "../core/ports";
 import type { AgentConfig } from "../../lib/types";
 import type { ToolConfig } from "../../lib/config";
 export interface CallContext {
@@ -5,7 +6,12 @@ export interface CallContext {
   tools: ToolConfig[];
   brief: string;
   direction: "inbound" | "outbound";
-  purpose: "conversation" | "voicemail";
+  purpose: "conversation" | "voicemail" | "warm-consultation";
+  history?: ChatMessage[];
+  deadline?: number;
+  warmTransferId?: string;
+  resumeTransferId?: string;
+  endAfterFirstMessage?: boolean;
   sid?: string;
   from?: string;
   to?: string;

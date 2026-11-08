@@ -266,7 +266,9 @@ export default function Page() {
                     <section className="tool-card" key={t.id}>
                       <span className="badge">
                         {t.type === "transferCall"
-                          ? "Transfer call"
+                          ? t.transferMode === "warm"
+                            ? "Warm transfer"
+                            : "Blind transfer"
                           : t.type === "dtmf"
                             ? "DTMF / IVR"
                             : "Custom function"}

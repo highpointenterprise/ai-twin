@@ -33,6 +33,7 @@ export function attachMediaServer(
     registry: CallRegistry;
     traces: TraceStore;
     contexts: ContextStore;
+    onResumed?: (transferId: string, sid: string) => void;
   },
 ): WebSocketServer {
   const wss = new WebSocketServer({
@@ -87,11 +88,14 @@ export function attachMediaServer(
             callSid: sid,
             streamSid: start.streamSid,
             trace: deps.traces.for(sid),
+            transportClose: () => socket.close(),
             send: (message) => {
               if (socket.readyState === socket.OPEN)
                 socket.send(JSON.stringify(message));
             },
           });
+          if (snapshot.resumeTransferId)
+            deps.onResumed?.(snapshot.resumeTransferId, sid);
           deps.pool.add(session);
           deps.registry.update(sid, "in-progress");
         } else if (

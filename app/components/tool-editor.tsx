@@ -1,6 +1,11 @@
 "use client";
 import { useState } from "react";
-import { toolSchema, type ToolInput, type ToolConfig } from "../../lib/config";
+import {
+  warmTransferSchema,
+  toolSchema,
+  type ToolInput,
+  type ToolConfig,
+} from "../../lib/config";
 const initial = (type: ToolInput["type"]): ToolInput =>
   type === "transferCall"
     ? {
@@ -8,6 +13,8 @@ const initial = (type: ToolInput["type"]): ToolInput =>
         name: "transfer_call",
         description:
           "Transfer the caller to the right team when they request human assistance.",
+        transferMode: "blind",
+        warmTransfer: warmTransferSchema.parse({}),
         routingMode: "description",
         timeoutSeconds: 30,
         destinations: [
@@ -138,6 +145,187 @@ export function ToolEditor({
       {tool.type === "transferCall" && (
         <>
           <label>
+            Transfer mode
+            <select
+              value={tool.transferMode}
+              onChange={(e) =>
+                setTool({
+                  ...tool,
+                  transferMode: e.target.value as "blind" | "warm",
+                })
+              }
+            >
+              <option value="blind">Blind · connect directly</option>
+              <option value="warm">
+                Warm · agent briefs recipient and confirms acceptance
+              </option>
+            </select>
+          </label>
+          {tool.transferMode === "warm" && (
+            <fieldset>
+              <legend>Warm transfer assistant</legend>
+              <p className="hint">
+                The caller waits on hold while a separate assistant privately
+                briefs the recipient using the conversation so far. It connects
+                only after acceptance. The assistant uses your configured
+                OpenAI, Deepgram, and ElevenLabs settings.
+              </p>
+              <label>
+                Operator instructions
+                <textarea
+                  rows={5}
+                  value={tool.warmTransfer.operatorPrompt}
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        operatorPrompt: e.target.value,
+                      },
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Operator first message (optional)
+                <textarea
+                  value={tool.warmTransfer.firstMessage}
+                  placeholder="Leave empty to generate a contextual introduction"
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        firstMessage: e.target.value,
+                      },
+                    })
+                  }
+                />
+              </label>
+              <div className="row">
+                <label>
+                  Consultation limit (seconds)
+                  <input
+                    type="number"
+                    min={30}
+                    max={600}
+                    value={tool.warmTransfer.maxDurationSeconds}
+                    onChange={(e) =>
+                      setTool({
+                        ...tool,
+                        warmTransfer: {
+                          ...tool.warmTransfer,
+                          maxDurationSeconds: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Recipient silence timeout (seconds)
+                  <input
+                    type="number"
+                    min={10}
+                    max={120}
+                    value={tool.warmTransfer.silenceTimeoutSeconds}
+                    onChange={(e) =>
+                      setTool({
+                        ...tool,
+                        warmTransfer: {
+                          ...tool.warmTransfer,
+                          silenceTimeoutSeconds: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Connection confirmation timeout (seconds)
+                  <input
+                    type="number"
+                    min={10}
+                    max={60}
+                    value={tool.warmTransfer.bridgeTimeoutSeconds}
+                    onChange={(e) =>
+                      setTool({
+                        ...tool,
+                        warmTransfer: {
+                          ...tool.warmTransfer,
+                          bridgeTimeoutSeconds: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </label>
+              </div>
+              <label>
+                Message before connecting the parties
+                <input
+                  value={tool.warmTransfer.connectMessage}
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        connectMessage: e.target.value,
+                      },
+                    })
+                  }
+                  required
+                />
+              </label>
+              <label>
+                Fallback message to caller
+                <textarea
+                  value={tool.warmTransfer.fallbackMessage}
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        fallbackMessage: e.target.value,
+                      },
+                    })
+                  }
+                  required
+                />
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={tool.warmTransfer.endCallOnFailure}
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        endCallOnFailure: e.target.checked,
+                      },
+                    })
+                  }
+                />
+                End the caller's call after the fallback message
+              </label>
+              <label>
+                Hold audio URL (optional)
+                <input
+                  type="url"
+                  value={tool.warmTransfer.holdAudioUrl ?? ""}
+                  placeholder="Use the built-in hold audio, or provide a public HTTPS WAV/MP3 URL"
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      warmTransfer: {
+                        ...tool.warmTransfer,
+                        holdAudioUrl: e.target.value || undefined,
+                      },
+                    })
+                  }
+                />
+              </label>
+            </fieldset>
+          )}
+          <label>
             Routing method
             <select
               value={tool.routingMode}
@@ -157,9 +345,10 @@ export function ToolEditor({
             </select>
           </label>
           <p className="hint">
-            Blind transfer through Twilio. The transfer message finishes before
-            dialing. Phrase mode matches a complete phrase within the caller's
-            final transcript, ignoring punctuation and case.
+            The transfer message finishes before dialing. Both warm and blind
+            modes support description or phrase routing. Phrase mode matches a
+            complete phrase within the caller's final transcript, ignoring
+            punctuation and case.
           </p>
           {tool.destinations.map((d, i) => (
             <fieldset key={i}>

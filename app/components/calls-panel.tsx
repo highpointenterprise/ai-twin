@@ -7,6 +7,15 @@ import type {
   PhoneNumberView,
 } from "../../lib/types";
 import { api } from "./api";
+interface TransferView {
+  id: string;
+  phase: string;
+  reason?: string;
+  operatorSid?: string;
+  destination: string;
+  recoveryAttempts: number;
+  lastError?: string;
+}
 export function CallsPanel({
   agents,
   numbers,
@@ -18,6 +27,7 @@ export function CallsPanel({
 }) {
   const [calls, setCalls] = useState<CallRecord[]>([]),
     [selected, setSelected] = useState("");
+  const [transfer, setTransfer] = useState<TransferView | null>(null);
   const [trace, setTrace] = useState<CallTraceView | null>(null);
   const [agentId, setAgent] = useState(agents[0]?.id ?? ""),
     [to, setTo] = useState(""),
@@ -34,7 +44,13 @@ export function CallsPanel({
           const t = await api<CallTraceView>(`/calls/${selected}/trace`).catch(
             () => null,
           );
-          if (!disposed) setTrace(t);
+          const transfer = await api<TransferView | null>(
+            `/calls/${selected}/transfer`,
+          ).catch(() => null);
+          if (!disposed) {
+            setTrace(t);
+            setTransfer(transfer);
+          }
         }
       } catch (e) {
         if (!disposed)
@@ -57,6 +73,8 @@ export function CallsPanel({
         from: from || undefined,
         context: context || undefined,
       });
+      setTrace(null);
+      setTransfer(null);
       setSelected(call.sid);
       setCalls((c) => [call, ...c]);
     } catch (e) {
@@ -162,9 +180,10 @@ export function CallsPanel({
                         onClick={() => {
                           setSelected(c.sid);
                           setTrace(null);
+                          setTransfer(null);
                         }}
                       >
-                        {c.direction}
+                        {c.parentCallSid ? "Consultation" : c.direction}
                       </button>
                     </td>
                     <td>{c.direction === "outbound" ? c.to : c.from}</td>
@@ -202,6 +221,62 @@ export function CallsPanel({
               ? `· Transfer: ${active.transferStatus}`
               : ""}
           </p>
+          {active.parentCallSid && (
+            <p>
+              <button
+                className="text-button"
+                onClick={() => {
+                  setSelected(active.parentCallSid!);
+                  setTrace(null);
+                  setTransfer(null);
+                }}
+              >
+                View original caller
+              </button>
+            </p>
+          )}
+          {transfer && (
+            <fieldset>
+              <legend>Warm transfer</legend>
+              <p>
+                {transfer.phase.replaceAll("-", " ")} · {transfer.destination}
+                {transfer.reason ? ` · ${transfer.reason}` : ""}
+              </p>
+              {transfer.operatorSid && (
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    setSelected(transfer.operatorSid!);
+                    setTrace(null);
+                    setTransfer(null);
+                  }}
+                >
+                  View recipient consultation
+                </button>
+              )}
+              {transfer.phase === "recovery-failed" && (
+                <>
+                  <p role="alert" className="error">
+                    Caller recovery could not be confirmed. {transfer.lastError}{" "}
+                    Check the live Twilio call before retrying or ending it.
+                  </p>
+                  <button
+                    onClick={() =>
+                      void api<TransferView>(
+                        `/calls/${active.sid}/transfer/retry`,
+                        "POST",
+                        {},
+                      )
+                        .then(setTransfer)
+                        .catch((e) => onError(e.message))
+                    }
+                  >
+                    Retry caller recovery
+                  </button>
+                </>
+              )}
+            </fieldset>
+          )}
           {trace ? (
             <>
               <ol className="transcript">

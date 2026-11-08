@@ -1,3 +1,4 @@
+import type { WarmTransferCoordinator } from "../transfers/coordinator";
 import type { ToolConfig } from "../../lib/config";
 import { env } from "../../lib/env";
 import type {
@@ -12,6 +13,7 @@ export class ToolExecutor {
   constructor(
     private readonly telephony: Telephony,
     private readonly request: typeof fetch = fetch,
+    private readonly warmTransfers?: WarmTransferCoordinator,
   ) {}
   async execute(
     tool: ToolConfig,
@@ -27,6 +29,24 @@ export class ToolExecutor {
       if (!d) throw new Error("Unknown transfer destination.");
       await context.speak(d.message);
       context.signal.throwIfAborted();
+      if (tool.transferMode === "warm") {
+        if (!this.warmTransfers || !context.snapshot)
+          throw new Error("Warm transfer service is not available.");
+        const transferId = this.warmTransfers.start(
+          context.callSid,
+          tool,
+          d,
+          context.snapshot,
+        );
+        return {
+          terminal: true,
+          result: {
+            status: "warm-transfer-started",
+            transferId,
+            destinationId: d.id,
+          },
+        };
+      }
       await this.telephony.transferCall(
         context.callSid,
         d,

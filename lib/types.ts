@@ -25,6 +25,9 @@ export interface CallRecord {
   answeredBy?: string;
   screeningEncountered?: boolean;
   transferStatus?: string;
+  transferId?: string;
+  operatorCallSid?: string;
+  parentCallSid?: string;
 }
 
 export interface PhoneNumberView {

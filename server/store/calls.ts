@@ -26,13 +26,31 @@ export class CallRegistry {
     fields: Partial<
       Pick<
         CallRecord,
-        "endedReason" | "answeredBy" | "screeningEncountered" | "transferStatus"
+        | "endedReason"
+        | "answeredBy"
+        | "screeningEncountered"
+        | "transferStatus"
+        | "transferId"
+        | "operatorCallSid"
+        | "parentCallSid"
       >
     >,
   ): void {
     const record = this.calls.get(sid);
     if (record) {
       Object.assign(record, fields, { updatedAt: Date.now() });
+      this.file.save(this.list());
+    }
+  }
+  restoreLive(sid: string): void {
+    const record = this.calls.get(sid);
+    if (record?.endedReason === "server-restarted") {
+      this.calls.set(sid, {
+        ...record,
+        status: "in-progress",
+        endedReason: undefined,
+        updatedAt: Date.now(),
+      });
       this.file.save(this.list());
     }
   }
@@ -44,8 +62,13 @@ export class CallRegistry {
     if (existing) return existing;
     const created: CallRecord = { ...record, updatedAt: Date.now() };
     this.calls.set(created.sid, created);
-    if (this.calls.size > MAX_RECORDS)
-      this.calls.delete(this.calls.keys().next().value as string);
+    if (this.calls.size > MAX_RECORDS) {
+      // Long-running conferences must remain controllable as newer calls arrive.
+      const oldestFinished = [...this.calls.values()].find((r) =>
+        TERMINAL.has(r.status),
+      );
+      if (oldestFinished) this.calls.delete(oldestFinished.sid);
+    }
     this.file.save(this.list());
     return created;
   }

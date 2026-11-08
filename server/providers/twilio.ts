@@ -22,14 +22,12 @@ export const createTwilioTelephony = (): Telephony => {
         label: n.friendlyName,
       })),
     routeInbound: async (sid, url, statusUrl) => {
-      await client()
-        .incomingPhoneNumbers(sid)
-        .update({
-          voiceUrl: url,
-          voiceMethod: "POST",
-          statusCallback: statusUrl,
-          statusCallbackMethod: "POST",
-        });
+      await client().incomingPhoneNumbers(sid).update({
+        voiceUrl: url,
+        voiceMethod: "POST",
+        statusCallback: statusUrl,
+        statusCallbackMethod: "POST",
+      });
     },
     placeCall: async ({ to, from, url, statusUrl, voicemail }) => {
       const c = await client().calls.create({
@@ -82,3 +80,52 @@ export const createTwilioTelephony = (): Telephony => {
       `<Response><Say>${escapeXml(message)}</Say><Hangup/></Response>`,
   };
 };
+
+export const createTwilioWarmTelephony =
+  (): import("../transfers/types").WarmTransferTelephony => {
+    const client = () =>
+      twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, {
+        autoRetry: false,
+        timeout: 15000,
+      });
+    return {
+      redirectCall: async (sid, url) => {
+        await client().calls(sid).update({ url, method: "POST" });
+      },
+      dialOperator: async ({ to, from, url, statusUrl, timeoutSeconds }) => {
+        const call = await client().calls.create({
+          to,
+          from,
+          url,
+          method: "POST",
+          timeout: timeoutSeconds,
+          statusCallback: statusUrl,
+          statusCallbackMethod: "POST",
+          statusCallbackEvent: [
+            "initiated",
+            "ringing",
+            "answered",
+            "completed",
+          ],
+        });
+        return call.sid;
+      },
+      endCall: async (sid) => {
+        await client().calls(sid).update({ status: "completed" });
+      },
+      callStatus: async (sid) => (await client().calls(sid).fetch()).status,
+      conferenceMembers: async (room) => {
+        const conference = (
+          await client().conferences.list({ friendlyName: room, limit: 10 })
+        ).find((c) => c.status !== "completed");
+        if (!conference) return undefined;
+        const participants = await client()
+          .conferences(conference.sid)
+          .participants.list({ limit: 10 });
+        return {
+          sid: conference.sid,
+          callSids: participants.map((p) => p.callSid),
+        };
+      },
+    };
+  };

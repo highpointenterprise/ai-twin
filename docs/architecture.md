@@ -14,6 +14,13 @@ flowchart LR
   LLM --> Executor[Tool executor]
   Executor --> Function[Custom HTTPS function]
   Executor --> Transfer[Twilio transfer]
+  Transfer --> Blind[Blind: Dial destination]
+  Transfer --> Warm[Persisted warm transfer coordinator]
+  Warm --> Hold[Caller waiting in conference]
+  Warm --> Consult[Private recipient conversation]
+  Consult --> Accept[Explicit acceptance verification]
+  Accept --> Bridge[Confirm both conference members]
+  Warm --> Recover[Restore original assistant and history]
   Executor --> DTMF[DTMF audio]
   LLM --> Output[Speech output + playback acknowledgements]
   Output --> TTS[ElevenLabs]
@@ -26,6 +33,7 @@ flowchart LR
 - `server/speech/`: output pacing, cancellation, mark correlation, G.711/DTMF and interruption rules.
 - `server/tools/`: persisted registry, model-visible schemas and function/transfer/DTMF execution. Only attached tools can run. Phrase transfers are not advertised to the model.
 - `server/engine/`: per-call orchestration. Partial/eager transcripts cannot execute tools. Interrupted work settles before the next conversational group starts, preserving OpenAI tool protocol ordering. No automatic retry of custom-function side effects.
+- `server/transfers/`: Twilio conference/hold TwiML, private consultation, fixed-prompt acceptance verification, and persisted warm-transfer state machine. A coordinator owns the handoff independently of the original media session's cancellation. Its only consultation tools are `transferSuccessful` and `transferCancel`.
 - `server/http/`: signed Twilio webhooks and media input; separate loopback admin API for CRUD and call control.
 - `server/store/`: atomic JSON persistence for assistant configurations, assignments, tools and recent call records. Per-call snapshots freeze assistant and tool settings at call creation. Stream context is bound to the actual call SID and consumed once.
 - `app/components/`: assistant settings, reusable tool editor, call controls/history.
@@ -40,10 +48,14 @@ flowchart LR
 6. Custom functions receive `Idempotency-Key: <callSid>:<toolCallId>`. The remote function server must enforce idempotency; aborting a request cannot undo an already-applied action.
 7. Tool responses are passed back to OpenAI using assistant/tool message pairs. Conversation trimming preserves complete groups. At most six tool rounds run per turn; DTMF waits for the next user/IVR turn.
 8. Twilio status updates are monotonic. Transfer outcomes are distinct from transfer initiation. Maximum duration and silence timers bound calls.
+9. Warm transfer keeps the caller and consultation on separate call legs until verified acceptance. A REST redirect is an attempt; querying both conference participants establishes `connected`. Lost callbacks are backed by polling during the bounded bridge period.
+10. Recovery ends the recipient leg before returning the caller to a fresh, signed, one-use media context. It preserves the caller's original history, tools and absolute assistant deadline, supplies any outstanding tool results, and announces the configured fallback. An authenticated media start establishes `returned`. Three failed recovery attempts become visible as `recovery-failed`, with an explicit retry in Calls.
 
 ## Persistence and deployment
 
-Run one backend process with its own `DATA_DIR`; atomic JSON files are not a distributed database. Do not run multiple writers against one directory. Active sessions/context and detailed traces live in memory. Recent call records persist, but detailed trace playback is unavailable after a restart. Restored nonterminal call records become `failed / server-restarted`, referring to interruption of this server's session, not verified downstream telephony status. A transfer may continue independently at Twilio.
+Run one backend process with its own `DATA_DIR`; atomic JSON files are not a distributed database. Do not run multiple writers against one directory. Active sessions/context and detailed traces live in memory. Recent call records persist, but detailed trace playback is unavailable after a restart. Restored nonterminal call records initially become `failed / server-restarted`, referring to interruption of this server's session, not verified downstream telephony status.
+
+Warm-transfer snapshots and progress persist separately in `warm-transfers.json`. On restart the coordinator queries Twilio: live callers in unfinished consultations are recovered without redialing the recipient; an already connected native conference is preserved. A verified live caller record is restored. A Twilio outage can prevent recovery; the failure remains visible for intervention. Completed human conferences continue independently of the assistant and its duration timer. See [warm transfer](warm-transfer.md) for settings and failure boundaries.
 
 The admin API binds to loopback, and Next.js proxies `/api` to port 8081. Only the voice service on 8080 should receive Twilio public callbacks. There is no multi-user authentication yet; this is a local development workspace, not a public SaaS deployment.
 

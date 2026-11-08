@@ -116,6 +116,43 @@ const toolBase = {
     ),
   description: z.string().trim().min(1).max(2000),
 };
+export const warmTransferSchema = z.object({
+  operatorPrompt: z
+    .string()
+    .trim()
+    .max(8000)
+    .default(
+      "Brief the recipient on why the caller needs help, answer relevant questions, and ask whether they can take the call.",
+    ),
+  firstMessage: z.string().trim().max(1500).default(""),
+  maxDurationSeconds: z.number().int().min(30).max(600).default(120),
+  silenceTimeoutSeconds: z.number().int().min(10).max(120).default(30),
+  bridgeTimeoutSeconds: z.number().int().min(10).max(60).default(20),
+  connectMessage: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .default("Thank you. I am connecting the caller now."),
+  fallbackMessage: z
+    .string()
+    .trim()
+    .min(1)
+    .max(1000)
+    .default(
+      "I couldn't connect you with the team. I'm still here and can continue helping you.",
+    ),
+  endCallOnFailure: z.boolean().default(false),
+  holdAudioUrl: z
+    .string()
+    .url()
+    .refine((v) => {
+      const u = new URL(v);
+      return u.protocol === "https:" && !u.username && !u.password;
+    }, "Use a public HTTPS audio URL.")
+    .optional(),
+});
+export type WarmTransferPlan = z.infer<typeof warmTransferSchema>;
 export const destinationSchema = z.object({
   id: z.string().min(1).max(64),
   number: e164,
@@ -133,6 +170,8 @@ export const toolSchema = z
     z.object({
       ...toolBase,
       type: z.literal("transferCall"),
+      transferMode: z.enum(["blind", "warm"]).default("blind"),
+      warmTransfer: warmTransferSchema.default({}),
       routingMode: z.enum(["description", "phrase"]).default("description"),
       destinations: z.array(destinationSchema).min(1).max(20),
       timeoutSeconds: z.number().int().min(5).max(120).default(30),

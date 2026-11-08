@@ -58,7 +58,16 @@ export interface ToolOutcome {
   terminal?: boolean;
   waitForUser?: boolean;
 }
+export interface ConversationSnapshot {
+  agent: AgentConfig;
+  tools: ToolConfig[];
+  brief: string;
+  history: ChatMessage[];
+  direction: "inbound" | "outbound";
+  deadline: number;
+}
 export interface ToolContext {
+  snapshot?: ConversationSnapshot;
   callSid: string;
   signal: AbortSignal;
   speak: (text: string) => Promise<void>;
@@ -166,7 +175,13 @@ export interface ConversationSession {
 
 export interface SessionInit {
   callSid: string;
-  purpose?: "conversation" | "voicemail";
+  purpose?: "conversation" | "voicemail" | "warm-consultation";
+  history?: ChatMessage[];
+  deadline?: number;
+  warmTransferId?: string;
+  resumeTransferId?: string;
+  endAfterFirstMessage?: boolean;
+  transportClose?: () => void;
   direction?: "inbound" | "outbound";
   tools?: ToolConfig[];
   agent: AgentConfig;

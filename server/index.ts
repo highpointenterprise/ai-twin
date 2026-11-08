@@ -15,7 +15,12 @@ import {
   listElevenLabsVoices,
 } from "./providers/elevenlabs";
 import { createOpenAiModel } from "./providers/openai";
-import { createTwilioTelephony } from "./providers/twilio";
+import { WarmTransferCoordinator } from "./transfers/coordinator";
+import { createConsultationSession } from "./transfers/consultation";
+import {
+  createTwilioWarmTelephony,
+  createTwilioTelephony,
+} from "./providers/twilio";
 import { AgentStore } from "./store/agents";
 import { CallRegistry } from "./store/calls";
 import { ContextStore } from "./store/contexts";
@@ -37,15 +42,25 @@ const tools = new ToolRegistry(join(env.DATA_DIR, "tools.json"));
 const pool = new SessionPool(env.MAX_CONCURRENT_CALLS),
   traces = new TraceStore(),
   contexts = new ContextStore();
-const telephony = createTwilioTelephony(),
-  executor = new ToolExecutor(telephony);
+const telephony = createTwilioTelephony();
+const warmTransfers = new WarmTransferCoordinator({
+  telephony: createTwilioWarmTelephony(),
+  contexts,
+  registry,
+  traces,
+  path: join(env.DATA_DIR, "warm-transfers.json"),
+});
+const executor = new ToolExecutor(telephony, fetch, warmTransfers);
 const engine: EngineDeps = {
   transcribe: createDeepgramTranscriber,
   synthesize: createElevenLabsSynthesizer,
   model: createOpenAiModel(),
   executeTool: async (tool, call, ctx) => {
     const result = await executor.execute(tool, call, ctx);
-    if (result.terminal)
+    if (
+      result.terminal &&
+      (tool.type !== "transferCall" || tool.transferMode !== "warm")
+    )
       registry.patch(ctx.callSid, { transferStatus: "initiated" });
     return result;
   },
@@ -66,10 +81,15 @@ const deps: HttpDeps = {
   telephony,
   listVoices: listElevenLabsVoices,
   pendingCalls: 0,
+  warmTransfers,
 };
 const publicServer = createServer(createPublicApp(deps));
 const media = attachMediaServer(publicServer, {
-  factory: (init) => new StandardSession(init, engine),
+  factory: (init) =>
+    init.purpose === "warm-consultation"
+      ? createConsultationSession(init, engine, warmTransfers)
+      : new StandardSession(init, engine),
+  onResumed: (id, sid) => warmTransfers.resumed(id, sid),
   pool,
   registry,
   traces,
@@ -85,7 +105,9 @@ logEvent("configuration", {
   calling_ready: !missingCallConfiguration().length,
   missing: missingCallConfiguration().join(", "),
 });
+void warmTransfers.recoverAfterRestart();
 const shutdown = () => {
+  warmTransfers.shutdown();
   pool.closeAll();
   for (const client of media.clients) client.terminate();
   media.close();

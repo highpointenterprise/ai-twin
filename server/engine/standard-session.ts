@@ -27,6 +27,7 @@ export class StandardSession implements ConversationSession {
   private voicedMs = 0;
   private waitingForScreener = false;
   private idleTimer?: NodeJS.Timeout;
+  private readonly deadline: number;
   private readonly durationTimer: NodeJS.Timeout;
   private readonly executed = new Map<string, unknown>();
 
@@ -34,13 +35,16 @@ export class StandardSession implements ConversationSession {
     private readonly init: SessionInit,
     private readonly deps: EngineDeps,
   ) {
+    this.history.push(...structuredClone(init.history ?? []));
+    this.deadline =
+      init.deadline ?? Date.now() + init.agent.maxDurationSeconds * 1000;
     this.output = new SpeechOutput(init, deps.synthesize);
     this.screening = new ScreeningGate(init.agent.callScreening);
     this.durationTimer = setTimeout(
       () => void this.end("max-duration"),
-      init.agent.maxDurationSeconds * 1000,
+      Math.max(0, this.deadline - Date.now()),
     );
-    if (init.purpose !== "voicemail") {
+    if (init.purpose !== "voicemail" && !init.endAfterFirstMessage) {
       this.transcriber = deps.transcribe(
         {
           onSpeechStart: () => {
@@ -88,11 +92,16 @@ export class StandardSession implements ConversationSession {
             false,
           ),
         );
-      else this.run((signal) => this.speak(init.agent.firstMessage, signal));
+      else
+        this.run(async (signal) => {
+          await this.speak(init.agent.firstMessage, signal);
+          if (init.endAfterFirstMessage)
+            await this.end("warm-transfer-fallback-ended");
+        });
     });
   }
   pushAudio(payload: string): void {
-    if (this.closed || this.ending) return;
+    if (this.closed || this.ending || this.init.endAfterFirstMessage) return;
     const chunk = Buffer.from(payload, "base64");
     // Duration threshold is accumulated from actual voiced frames, not a wall-clock timer.
     if (audioRms(chunk) > 600) {
@@ -111,6 +120,7 @@ export class StandardSession implements ConversationSession {
     this.output.mark(name);
   }
   handleDtmf(digit: string): void {
+    if (this.init.endAfterFirstMessage) return;
     if (!/^[0-9A-D*#]$/.test(digit)) return;
     this.init.trace.log("dtmf.received", { digit });
     this.accept(`[Caller pressed keypad ${digit}]`);
@@ -123,6 +133,7 @@ export class StandardSession implements ConversationSession {
     this.turn?.abort();
     this.transcriber?.close();
     this.init.trace.log("session.closed");
+    this.init.transportClose?.();
   }
   private interrupt(): void {
     if (!this.turn || this.ending) return;
@@ -198,6 +209,14 @@ export class StandardSession implements ConversationSession {
         this.init.trace.log("turn.failed", {
           message: error instanceof Error ? error.message : "unknown",
         });
+        if (this.init.purpose === "warm-consultation") {
+          await this.end("consultation-provider-error");
+          return;
+        }
+        if (this.init.endAfterFirstMessage) {
+          await this.end("warm-transfer-fallback-error");
+          return;
+        }
         try {
           await this.speak(
             "Sorry, I couldn't complete that. Please try again.",
@@ -334,6 +353,14 @@ export class StandardSession implements ConversationSession {
         });
         outcome = await this.deps.executeTool(tool, call, {
           callSid: this.init.callSid,
+          snapshot: {
+            agent: this.init.agent,
+            tools: this.init.tools ?? [],
+            brief: this.init.brief,
+            history: structuredClone(this.history),
+            direction: this.init.direction ?? "inbound",
+            deadline: this.deadline,
+          },
           signal,
           speak: async (text) => {
             // Tool-call protocol cannot contain an assistant message between call and result.

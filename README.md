@@ -40,14 +40,14 @@ Required outbound hosts: `api.twilio.com`, `api.deepgram.com`, `api.openai.com`,
 - Fixed, wait-for-user, and model-generated first messages.
 - Deepgram semantic end-of-turn confidence/timeout; configurable start delay, word/voice-duration interruption, acknowledgement/interruption phrases and backoff.
 - ElevenLabs voice/model, stability, similarity and speed.
-- Reusable **transferCall** tools with destination-description or caller-phrase routing, pre-transfer message, extension and ring timeout. Blind transfers only.
+- Reusable **transferCall** tools with **blind or agentic warm transfer**, destination-description or caller-phrase routing, pre-transfer message, extension and ring timeout. Warm transfer holds the caller, privately briefs the recipient, verifies acceptance, then confirms both parties joined the conference. Failed attempts restore the original assistant and conversation.
 - **DTMF** tools with tone duration/gap, w/W pauses, and incoming keypad events. Outbound tones use in-band audio; validate against your target IVR.
 - **Custom function** tools with JSON Schema, HTTPS webhook, credential reference, timeout, result correlation and model continuation.
 - Twilio voicemail detection: hang up or play an ElevenLabs message after the greeting, then hang up. Configurable unknown-answer handling.
 - Best-effort English call-screening response and handoff wait.
 - Persistent assistant/tool configuration and recent call history; active-call hangup and in-session traces.
 
-See [research and parity boundaries](docs/vapi-research.md) and [architecture](docs/architecture.md). This implements the requested initial scope; it is not every Vapi feature. Meet and HeyGen are later integrations.
+See [warm transfer setup and recovery](docs/warm-transfer.md), [research and parity boundaries](docs/vapi-research.md), and [architecture](docs/architecture.md). This implements the requested initial scope; it is not every Vapi feature. Meet and HeyGen are later integrations.
 
 ## Custom function contract
 
@@ -91,4 +91,4 @@ npm run typecheck -- --incremental false
 npm run build
 ```
 
-Tests cover opening modes, interruption, playback acknowledgements, tool protocol sequencing, DTMF frequency generation, voicemail/screening decisions, signed webhook routing, persistence, and API failures without credentials. Provider doubles do not establish real telephony quality or connectivity. Before live use, validate human answers, natural voicemail, screening, both transfer routes, your IVRs, and function success/failure paths on controlled calls.
+Tests cover opening modes, interruption, playback acknowledgements, tool protocol sequencing, DTMF frequency generation, voicemail/screening decisions, signed webhook routing, persistence, and API failures without credentials. Warm-transfer tests cover private consultation, acceptance verification, conference membership, rejection, ring/consultation/bridge timeouts, late and duplicate callbacks, authenticated recovery, and process restart. Provider doubles do not establish real telephony quality or connectivity. Before live use, validate human answers, natural voicemail, screening, both transfer modes and routing methods, your IVRs, and function success/failure paths on controlled calls.

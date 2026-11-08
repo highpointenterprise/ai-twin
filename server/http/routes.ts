@@ -1,3 +1,5 @@
+import { warmTransferRoutes } from "../transfers/routes";
+import type { WarmTransferCoordinator } from "../transfers/coordinator";
 import { randomUUID } from "node:crypto";
 import express, {
   type Express,
@@ -36,6 +38,7 @@ export interface HttpDeps {
   tools: ToolRegistry;
   listVoices: () => Promise<VoiceOption[]>;
   pendingCalls: number;
+  warmTransfers?: WarmTransferCoordinator;
 }
 const statusMap: Record<string, CallStatus> = {
   queued: "initiating",
@@ -64,13 +67,11 @@ const onError = (
   _next: NextFunction,
 ): void => {
   if (error instanceof ZodError) {
-    res
-      .status(400)
-      .json({
-        error: error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; "),
-      });
+    res.status(400).json({
+      error: error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; "),
+    });
     return;
   }
   if (error instanceof HttpError) {
@@ -78,12 +79,10 @@ const onError = (
     return;
   }
   logError(error);
-  res
-    .status(502)
-    .json({
-      error:
-        "The operation failed. Check provider configuration and the server log.",
-    });
+  res.status(502).json({
+    error:
+      "The operation failed. Check provider configuration and the server log.",
+  });
 };
 const capacity = (d: HttpDeps): boolean =>
   d.pendingCalls + d.registry.activeCount >= env.MAX_CONCURRENT_CALLS;
@@ -288,6 +287,22 @@ export const createAdminApp = (d: HttpDeps): Express => {
     }),
   );
   app.get(
+    "/api/calls/:sid/transfer",
+    handle((req, res) =>
+      res.json(d.warmTransfers?.view(req.params.sid) ?? null),
+    ),
+  );
+  app.post(
+    "/api/calls/:sid/transfer/retry",
+    handle(async (req, res) => {
+      const record = d.warmTransfers?.forCaller(req.params.sid);
+      if (!record || !d.warmTransfers)
+        throw new HttpError(404, "Warm transfer not found.");
+      await d.warmTransfers.retry(record.id);
+      return res.json(d.warmTransfers.view(req.params.sid));
+    }),
+  );
+  app.get(
     "/api/calls/:sid",
     handle((req, res) => {
       const r = registry.get(req.params.sid);
@@ -302,6 +317,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
       if (!r) throw new HttpError(404, "Call not found.");
       if (!["completed", "failed"].includes(r.status)) {
         await telephony.endCall(r.sid);
+        await d.warmTransfers?.callerEnded(r.sid);
         registry.patch(r.sid, { endedReason: "user-ended" });
         registry.update(r.sid, "completed");
       }
@@ -423,12 +439,10 @@ export const createPublicApp = (d: HttpDeps): Express => {
         b.AnsweredBy,
         context.agent.voicemailDetection,
       );
-      traces
-        .for(b.CallSid)
-        .log("answer.detected", {
-          answeredBy: b.AnsweredBy || "not-detected",
-          action,
-        });
+      traces.for(b.CallSid).log("answer.detected", {
+        answeredBy: b.AnsweredBy || "not-detected",
+        action,
+      });
       res.type("text/xml");
       if (action === "hangup") {
         contexts.delete(q.callId);
@@ -470,6 +484,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
       if (status === "completed" || status === "failed") {
         const contextId = contexts.idForSid(b.CallSid);
         if (contextId) contexts.delete(contextId);
+        void d.warmTransfers?.callerEnded(b.CallSid);
         traces.for(b.CallSid).finish();
         if (typeof req.query.callId === "string")
           contexts.delete(req.query.callId);
@@ -494,6 +509,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
       return res.type("text/xml").send("<Response><Hangup/></Response>");
     }),
   );
+  if (d.warmTransfers)
+    app.use(warmTransferRoutes(d.warmTransfers, contexts, verified));
   app.use(onError);
   return app;
 };
