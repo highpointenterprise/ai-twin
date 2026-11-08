@@ -66,6 +66,7 @@ export class StandardSession implements ConversationSession {
           },
         },
         init.agent.transcriber,
+        init.inputAudioFormat,
       );
     }
     init.trace.log("session.started", {
@@ -104,8 +105,14 @@ export class StandardSession implements ConversationSession {
     if (this.closed || this.ending || this.init.endAfterFirstMessage) return;
     const chunk = Buffer.from(payload, "base64");
     // Duration threshold is accumulated from actual voiced frames, not a wall-clock timer.
-    if (audioRms(chunk) > 600) {
-      this.voicedMs += chunk.length / 8;
+    const format = this.init.inputAudioFormat ?? {
+      encoding: "mulaw",
+      sampleRate: 8000,
+    };
+    if (audioRms(chunk, format.encoding) > 600) {
+      this.voicedMs +=
+        (chunk.length * 1000) /
+        (format.sampleRate * (format.encoding === "mulaw" ? 1 : 2));
       if (!this.turn) this.armIdle();
     } else this.voicedMs = 0;
     if (
@@ -211,6 +218,10 @@ export class StandardSession implements ConversationSession {
         });
         if (this.init.purpose === "warm-consultation") {
           await this.end("consultation-provider-error");
+          return;
+        }
+        if (this.init.purpose === "meeting") {
+          await this.end("meeting-provider-error");
           return;
         }
         if (this.init.endAfterFirstMessage) {

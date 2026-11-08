@@ -9,10 +9,12 @@ export const createElevenLabsSynthesizer: SynthesizerFactory = (
   voiceId,
   onAudio,
   config = voiceSchema.parse({}),
+  format = { encoding: "mulaw", sampleRate: 8000 },
 ) => {
   const query = new URLSearchParams({
     model_id: config.model,
-    output_format: "ulaw_8000",
+    output_format:
+      format.encoding === "mulaw" ? "ulaw_8000" : `pcm_${format.sampleRate}`,
     auto_mode: "true",
   });
   const socket = new WebSocket(

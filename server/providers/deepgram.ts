@@ -7,11 +7,12 @@ import { providerAgent } from "./network";
 export const createDeepgramTranscriber: TranscriberFactory = (
   events,
   config = transcriberSchema.parse({}),
+  format = { encoding: "mulaw", sampleRate: 8000 },
 ) => {
   const query = new URLSearchParams({
     model: config.model,
-    encoding: "mulaw",
-    sample_rate: "8000",
+    encoding: format.encoding === "mulaw" ? "mulaw" : "linear16",
+    sample_rate: String(format.sampleRate),
     eot_threshold: String(config.eotThreshold),
     eot_timeout_ms: String(config.eotTimeoutMs),
   });

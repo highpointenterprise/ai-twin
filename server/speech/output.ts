@@ -1,18 +1,42 @@
 import { randomUUID } from "node:crypto";
-import type { SessionInit, SynthesizerFactory } from "../core/ports";
+import type {
+  AudioOutputPort,
+  SessionInit,
+  SynthesizerFactory,
+} from "../core/ports";
 import { delay } from "./timing";
 export class SpeechOutput {
   private readonly pending = new Map<string, () => void>();
   active = false;
+  private readonly transport: AudioOutputPort;
+  private readonly bytesPerSecond: number;
   constructor(
     private readonly init: SessionInit,
     private readonly synthesize: SynthesizerFactory,
-  ) {}
+  ) {
+    this.transport = init.audioOutput ?? {
+      audio: (payload) =>
+        init.send({
+          event: "media",
+          streamSid: init.streamSid,
+          media: { payload },
+        }),
+      mark: (name) =>
+        init.send({ event: "mark", streamSid: init.streamSid, mark: { name } }),
+      clear: () => init.send({ event: "clear", streamSid: init.streamSid }),
+    };
+    const format = init.outputAudioFormat ?? {
+      encoding: "mulaw",
+      sampleRate: 8000,
+    };
+    this.bytesPerSecond =
+      format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
+  }
   mark(name: string): void {
     this.pending.get(name)?.();
   }
   clear(): void {
-    this.init.send({ event: "clear", streamSid: this.init.streamSid });
+    this.transport.clear();
   }
   async speak(text: string, signal: AbortSignal, waitMs = 0): Promise<void> {
     if (!text.trim() || signal.aborted) return;
@@ -27,7 +51,7 @@ export class SpeechOutput {
       (payload) => {
         if (signal.aborted || stopped) return;
         audioBytes += Buffer.from(payload, "base64").length;
-        if (audioBytes > 8000 * 180) {
+        if (audioBytes > this.bytesPerSecond * 180) {
           audioLimitExceeded = true;
           return;
         }
@@ -35,16 +59,12 @@ export class SpeechOutput {
         first = false;
         queue = queue.then(async () => {
           if (firstPacket && waitMs) await delay(waitMs, signal);
-          if (!signal.aborted && !stopped)
-            this.init.send({
-              event: "media",
-              streamSid: this.init.streamSid,
-              media: { payload },
-            });
+          if (!signal.aborted && !stopped) this.transport.audio(payload);
         });
         void queue.catch(() => {});
       },
       this.init.agent.voice,
+      this.init.outputAudioFormat,
     );
     const abort = () => {
       synth.close();
@@ -58,7 +78,10 @@ export class SpeechOutput {
       if (audioLimitExceeded)
         throw new Error("Synthesized utterance exceeded three minutes.");
       if (!signal.aborted && audioBytes)
-        await this.drain(signal, audioBytes / 8 + 10000);
+        await this.drain(
+          signal,
+          (audioBytes * 1000) / this.bytesPerSecond + 15000,
+        );
     } catch (error) {
       stopped = true;
       this.clear();
@@ -76,13 +99,12 @@ export class SpeechOutput {
       // Twilio buffers these 20 ms frames and acknowledges when playback finishes.
       for (let i = 0; i < audio.length; i += 160) {
         signal.throwIfAborted();
-        this.init.send({
-          event: "media",
-          streamSid: this.init.streamSid,
-          media: { payload: audio.subarray(i, i + 160).toString("base64") },
-        });
+        this.transport.audio(audio.subarray(i, i + 160).toString("base64"));
       }
-      await this.drain(signal, audio.length / 8 + 10000);
+      await this.drain(
+        signal,
+        (audio.length * 1000) / this.bytesPerSecond + 10000,
+      );
     } finally {
       this.active = false;
     }
@@ -103,18 +125,19 @@ export class SpeechOutput {
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Twilio playback acknowledgement timed out."));
+        reject(new Error("Audio playback acknowledgement timed out."));
       }, timeoutMs);
       this.pending.set(name, () => {
         cleanup();
         resolve();
       });
       signal.addEventListener("abort", abort, { once: true });
-      this.init.send({
-        event: "mark",
-        streamSid: this.init.streamSid,
-        mark: { name },
-      });
+      try {
+        this.transport.mark(name);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
     });
   }
 }

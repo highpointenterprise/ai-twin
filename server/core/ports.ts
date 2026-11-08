@@ -2,6 +2,16 @@ import type { ToolConfig } from "../../lib/config";
 import type { AgentConfig } from "../../lib/types";
 import type { CallTrace } from "../observability/trace";
 
+export interface AudioFormat {
+  encoding: "mulaw" | "pcm_s16le";
+  sampleRate: 8000 | 16000 | 24000;
+}
+export interface AudioOutputPort {
+  audio: (base64: string) => void;
+  mark: (name: string) => void;
+  clear: () => void;
+}
+
 export interface TranscriberEvents {
   onSpeechStart: () => void;
   onPartial: (text: string) => void;
@@ -19,6 +29,7 @@ export interface Transcriber {
 export type TranscriberFactory = (
   events: TranscriberEvents,
   config?: AgentConfig["transcriber"],
+  format?: AudioFormat,
 ) => Transcriber;
 
 export interface SpeechSynthesizer {
@@ -29,8 +40,9 @@ export interface SpeechSynthesizer {
 
 export type SynthesizerFactory = (
   voiceId: string,
-  onAudio: (mulawBase64: string) => void,
+  onAudio: (base64: string) => void,
   config?: AgentConfig["voice"],
+  format?: AudioFormat,
 ) => SpeechSynthesizer;
 
 export interface ChatMessage {
@@ -167,7 +179,7 @@ export interface EngineDeps {
 }
 
 export interface ConversationSession {
-  pushAudio: (mulawBase64: string) => void;
+  pushAudio: (base64: string) => void;
   handleDtmf?: (digit: string) => void;
   handleMark: (name: string) => void;
   close: () => void;
@@ -175,7 +187,10 @@ export interface ConversationSession {
 
 export interface SessionInit {
   callSid: string;
-  purpose?: "conversation" | "voicemail" | "warm-consultation";
+  purpose?: "conversation" | "voicemail" | "warm-consultation" | "meeting";
+  inputAudioFormat?: AudioFormat;
+  outputAudioFormat?: AudioFormat;
+  audioOutput?: AudioOutputPort;
   history?: ChatMessage[];
   deadline?: number;
   warmTransferId?: string;

@@ -28,6 +28,10 @@ import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
 import { TwilioCredentialStore } from "./store/twilio-credentials";
 import { TwilioSettings } from "./providers/twilio-settings";
+import { MeetingService } from "./meetings/service";
+import { MeetingStore } from "./meetings/store";
+import { GoogleMeetBrowserDriver } from "./meetings/browser-driver";
+import { createLiveAvatar } from "./meetings/liveavatar";
 const store = new AgentStore(
   assistantSchema.parse({
     name: "Luna",
@@ -77,6 +81,15 @@ const engine: EngineDeps = {
   },
   onScreening: (sid) => registry.patch(sid, { screeningEncountered: true }),
 };
+const meetings = new MeetingService({
+  store: new MeetingStore(join(env.DATA_DIR, "meetings.json")),
+  agents: store,
+  tools,
+  engine,
+  drivers: () => new GoogleMeetBrowserDriver(),
+  avatars: createLiveAvatar,
+  traces: new TraceStore(),
+});
 const deps: HttpDeps = {
   store,
   registry,
@@ -89,6 +102,7 @@ const deps: HttpDeps = {
   pendingCalls: 0,
   warmTransfers,
   twilioSettings,
+  meetings,
 };
 const publicServer = createServer(createPublicApp(deps));
 const media = attachMediaServer(publicServer, {
@@ -114,6 +128,7 @@ logEvent("configuration", {
 });
 void warmTransfers.recoverAfterRestart();
 const shutdown = () => {
+  void meetings.shutdown();
   warmTransfers.shutdown();
   pool.closeAll();
   for (const client of media.clients) client.terminate();

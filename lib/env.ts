@@ -21,6 +21,15 @@ const schema = z.object({
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),
   DATA_DIR: z.string().default(".data"),
   FUNCTION_ALLOWED_HOSTS: z.string().default(""),
+  LIVEAVATAR_API_KEY: z.string().default(""),
+  LIVEAVATAR_AVATAR_ID: z.string().default(""),
+  CHROMIUM_EXECUTABLE_PATH: z.string().default(""),
+  MEET_GOOGLE_STORAGE_STATE_PATH: z.string().default(""),
+  MEET_CHROMIUM_NO_SANDBOX: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  MAX_CONCURRENT_MEETINGS: z.coerce.number().int().min(1).max(10).default(2),
 });
 export const env = schema.parse(process.env);
 export const missingCallConfiguration = (

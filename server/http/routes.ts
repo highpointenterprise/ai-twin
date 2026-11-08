@@ -1,4 +1,6 @@
 import { warmTransferRoutes } from "../transfers/routes";
+import { meetingRoutes } from "../meetings/routes";
+import type { MeetingService } from "../meetings/service";
 import type { WarmTransferCoordinator } from "../transfers/coordinator";
 import { randomUUID } from "node:crypto";
 import express, {
@@ -45,6 +47,7 @@ export interface HttpDeps {
   pendingCalls: number;
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
+  meetings?: MeetingService;
 }
 const statusMap: Record<string, CallStatus> = {
   queued: "initiating",
@@ -381,6 +384,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
       return res.json(trace.view());
     }),
   );
+  if (d.meetings) app.use(meetingRoutes(d.meetings));
   app.use(onError);
   return app;
 };
