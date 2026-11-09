@@ -1,106 +1,124 @@
 import type { Server } from "node:http";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
-import type { ConversationMode } from "../../lib/types";
 import { parseJson } from "../../lib/json";
 import { verifyStreamToken } from "../../lib/token";
 import type { ConversationSession, SessionFactory } from "../core/ports";
 import type { SessionPool } from "../engine/pool";
-import { logEvent, type TraceStore } from "../observability/trace";
-import type { AgentStore } from "../store/agents";
+import type { TraceStore } from "../observability/trace";
 import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
-
-const startEvent = z.object({
+const startSchema = z.object({
   event: z.literal("start"),
   start: z.object({
     streamSid: z.string(),
     callSid: z.string(),
-    customParameters: z.object({ agentId: z.string(), callId: z.string(), token: z.string() }),
+    mediaFormat: z.object({
+      encoding: z.literal("audio/x-mulaw"),
+      sampleRate: z.literal(8000),
+      channels: z.literal(1),
+    }),
+    customParameters: z.object({
+      agentId: z.string(),
+      callId: z.string(),
+      token: z.string(),
+    }),
   }),
 });
-const mediaEvent = z.object({ event: z.literal("media"), media: z.object({ payload: z.string() }) });
-const markEvent = z.object({ event: z.literal("mark"), mark: z.object({ name: z.string() }) });
-const stopEvent = z.object({ event: z.literal("stop") });
-
-interface MediaDeps {
-  factories: Record<ConversationMode, SessionFactory>;
-  store: AgentStore;
-  registry: CallRegistry;
-  pool: SessionPool;
-  traces: TraceStore;
-  contexts: ContextStore;
-}
-
-export const attachMediaServer = (server: Server, deps: MediaDeps): WebSocketServer => {
-  const { factories, store, registry, pool, traces, contexts } = deps;
-  const wss = new WebSocketServer({ server, path: "/media", maxPayload: 64 * 1024 });
-
+export function attachMediaServer(
+  server: Server,
+  deps: {
+    factory: SessionFactory;
+    pool: SessionPool;
+    registry: CallRegistry;
+    traces: TraceStore;
+    contexts: ContextStore;
+    onResumed?: (transferId: string, sid: string) => void;
+  },
+): WebSocketServer {
+  const wss = new WebSocketServer({
+    server,
+    path: "/media",
+    maxPayload: 64 * 1024,
+  });
   wss.on("connection", (socket) => {
-    let session: ConversationSession | null = null;
-    let callSid = "";
-
-    const release = (): void => {
-      if (!session) return;
-      session.close();
-      pool.remove(session);
-      session = null;
-      traces.for(callSid).finish();
-    };
-
-    socket.on("message", (raw) => {
-      const data = parseJson(raw.toString());
-
-      const start = startEvent.safeParse(data);
-      if (start.success) {
-        const { streamSid, callSid: sid, customParameters: p } = start.data.start;
-        callSid = sid;
-        const trace = traces.for(sid);
-        const agent = store.find(p.agentId);
-        const reason = !agent
-          ? "unknown_agent"
-          : !verifyStreamToken(p.agentId, p.callId, p.token)
-            ? "bad_token"
-            : pool.isFull
-              ? "capacity"
-              : session
-                ? "duplicate_start"
-                : "";
-        if (!agent || reason) {
-          trace.log("media.rejected", { reason });
-          socket.close(1008, "rejected");
-          return;
-        }
-        trace.log("media.connected", { stream: streamSid, mode: agent.mode });
-        session = factories[agent.mode]({
-          agent,
-          brief: contexts.take(p.callId),
-          streamSid,
-          trace,
-          send: (message) => {
-            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
-          },
-        });
-        pool.add(session);
-        registry.update(sid, "in-progress");
-        return;
+    let session: ConversationSession | undefined;
+    let sid = "";
+    const timeout = setTimeout(
+      () => socket.close(1008, "Missing start event"),
+      10000,
+    );
+    const release = () => {
+      clearTimeout(timeout);
+      if (session) {
+        session.close();
+        deps.pool.remove(session);
+        session = undefined;
       }
-
-      const media = mediaEvent.safeParse(data);
-      if (media.success) return session?.pushAudio(media.data.media.payload);
-
-      const mark = markEvent.safeParse(data);
-      if (mark.success) return session?.handleMark(mark.data.mark.name);
-
-      if (stopEvent.safeParse(data).success) {
-        logEvent("media.stop", { call: callSid.slice(-8) });
+    };
+    socket.on("message", (raw) => {
+      try {
+        const data = parseJson(raw.toString()) as {
+          event?: string;
+          media?: { payload?: string };
+          mark?: { name?: string };
+          dtmf?: { digit?: string };
+        } | null;
+        if (!data) return;
+        if (data.event === "start") {
+          const { start } = startSchema.parse(data),
+            p = start.customParameters;
+          const context = deps.contexts.get(p.callId);
+          if (
+            session ||
+            deps.pool.isFull ||
+            !context ||
+            context.agent.id !== p.agentId ||
+            context.sid !== start.callSid ||
+            !verifyStreamToken(p.agentId, p.callId, p.token)
+          ) {
+            socket.close(1008, "Rejected stream");
+            return;
+          }
+          const snapshot = deps.contexts.take(p.callId, start.callSid)!;
+          sid = start.callSid;
+          clearTimeout(timeout);
+          session = deps.factory({
+            ...snapshot,
+            callSid: sid,
+            streamSid: start.streamSid,
+            trace: deps.traces.for(sid),
+            transportClose: () => socket.close(),
+            send: (message) => {
+              if (socket.readyState === socket.OPEN)
+                socket.send(JSON.stringify(message));
+            },
+          });
+          if (snapshot.resumeTransferId)
+            deps.onResumed?.(snapshot.resumeTransferId, sid);
+          deps.pool.add(session);
+          deps.registry.update(sid, "in-progress");
+        } else if (
+          data.event === "media" &&
+          typeof data.media?.payload === "string"
+        )
+          session?.pushAudio(data.media.payload);
+        else if (data.event === "mark" && typeof data.mark?.name === "string")
+          session?.handleMark(data.mark.name);
+        else if (data.event === "dtmf" && typeof data.dtmf?.digit === "string")
+          session?.handleDtmf?.(data.dtmf.digit);
+        else if (data.event === "stop") {
+          release();
+          socket.close();
+        }
+      } catch {
+        if (sid) deps.traces.for(sid).log("media.invalid_event");
+        socket.close(1008, "Invalid media event");
         release();
       }
     });
-
     socket.on("close", release);
     socket.on("error", release);
   });
-
   return wss;
-};
+}

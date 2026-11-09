@@ -1,18 +1,40 @@
 import { randomUUID } from "node:crypto";
 import type { AgentConfig, AgentInput } from "../../lib/types";
+import { assistantSchema } from "../../lib/config";
+import { JsonFile } from "./persistence";
 import { HttpError } from "../core/errors";
 
 export class AgentStore {
   private readonly agents = new Map<string, AgentConfig>();
   private readonly numberToAgent = new Map<string, string>();
 
-  constructor(seed: AgentInput) {
-    this.create(seed);
+  private readonly file: JsonFile<{
+    agents: AgentConfig[];
+    assignments: [string, string][];
+  }>;
+  constructor(seed: AgentInput, path?: string) {
+    this.file = new JsonFile(path);
+    const saved = this.file.load({ agents: [], assignments: [] });
+    for (const agent of saved.agents)
+      this.agents.set(agent.id, {
+        ...assistantSchema.parse(agent),
+        id: agent.id,
+      });
+    for (const [number, id] of saved.assignments)
+      this.numberToAgent.set(number, id);
+    if (!this.agents.size) this.create(seed);
+  }
+  private persist(): void {
+    this.file.save({
+      agents: this.list(),
+      assignments: [...this.numberToAgent],
+    });
   }
 
   create(input: AgentInput): AgentConfig {
     const agent: AgentConfig = { ...input, id: randomUUID() };
     this.agents.set(agent.id, agent);
+    this.persist();
     return agent;
   }
 
@@ -20,6 +42,7 @@ export class AgentStore {
     this.get(id);
     const agent: AgentConfig = { ...input, id };
     this.agents.set(id, agent);
+    this.persist();
     return agent;
   }
 
@@ -38,7 +61,9 @@ export class AgentStore {
   }
 
   assign(phoneNumber: string, agentId: string): void {
+    this.get(agentId);
     this.numberToAgent.set(phoneNumber, agentId);
+    this.persist();
   }
 
   agentForNumber(phoneNumber: string): AgentConfig | undefined {
@@ -47,7 +72,8 @@ export class AgentStore {
   }
 
   numberForAgent(agentId: string): string | undefined {
-    for (const [phoneNumber, id] of this.numberToAgent) if (id === agentId) return phoneNumber;
+    for (const [phoneNumber, id] of this.numberToAgent)
+      if (id === agentId) return phoneNumber;
     return undefined;
   }
 }

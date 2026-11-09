@@ -1,71 +1,120 @@
 import WebSocket from "ws";
-import { z } from "zod";
 import { env } from "../../lib/env";
+import { voiceSchema } from "../../lib/config";
 import { parseJson } from "../../lib/json";
 import type { VoiceOption } from "../../lib/types";
 import type { SynthesizerFactory } from "../core/ports";
-
-const audioMessageSchema = z.object({ audio: z.string().nullish(), isFinal: z.boolean().nullish() });
-const voicesSchema = z.object({ voices: z.array(z.object({ voice_id: z.string(), name: z.string() })) });
-
-export const createElevenLabsSynthesizer: SynthesizerFactory = (voiceId, onAudio) => {
-  const url =
-    `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input` +
-    `?model_id=eleven_flash_v2_5&output_format=ulaw_8000&auto_mode=true`;
-  const socket = new WebSocket(url, { headers: { "xi-api-key": env.ELEVENLABS_API_KEY } });
-
-  const ready = new Promise<void>((resolve, reject) => {
-    socket.once("open", () => {
-      socket.send(
-        JSON.stringify({
-          text: " ",
-          voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true },
-        }),
-      );
-      resolve();
-    });
-    socket.once("error", reject);
+import { providerAgent } from "./network";
+export const createElevenLabsSynthesizer: SynthesizerFactory = (
+  voiceId,
+  onAudio,
+  config = voiceSchema.parse({}),
+) => {
+  const query = new URLSearchParams({
+    model_id: config.model,
+    output_format: "ulaw_8000",
+    auto_mode: "true",
   });
-  ready.catch(() => undefined);
-
-  const finished = new Promise<void>((resolve) => {
-    socket.on("message", (raw) => {
-      const message = audioMessageSchema.safeParse(parseJson(raw.toString()));
-      if (!message.success) return;
-      if (message.data.audio) onAudio(message.data.audio);
-      else if (!message.data.isFinal) console.warn("elevenlabs message", raw.toString().slice(0, 300));
-      if (message.data.isFinal) resolve();
-    });
-    socket.on("close", (code, reason) => {
-      if (code !== 1000 && code !== 1005) console.warn("elevenlabs closed", code, reason.toString());
-      resolve();
-    });
-    socket.on("error", (error) => {
-      console.error("elevenlabs error", error.message);
-      resolve();
-    });
-  });
-
-  const send = async (payload: object): Promise<void> => {
-    await ready;
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
-  };
-
-  return {
-    push: (text) => send({ text: `${text} `, flush: true }),
-    end: async () => {
-      await send({ text: "" });
-      await finished;
+  const socket = new WebSocket(
+    `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${query}`,
+    {
+      headers: { "xi-api-key": env.ELEVENLABS_API_KEY },
+      agent: providerAgent(),
+      handshakeTimeout: 10000,
     },
-    close: () => socket.close(),
+  );
+  let readyResolve!: () => void,
+    readyReject!: (e: Error) => void,
+    doneResolve!: () => void,
+    doneReject!: (e: Error) => void;
+  let final = false,
+    closed = false;
+  const ready = new Promise<void>((r, j) => {
+    readyResolve = r;
+    readyReject = j;
+  });
+  const done = new Promise<void>((r, j) => {
+    doneResolve = r;
+    doneReject = j;
+  });
+  void ready.catch(() => {});
+  void done.catch(() => {});
+  const timeout = setTimeout(
+    () => fail(new Error("ElevenLabs synthesis timed out.")),
+    45000,
+  );
+  const fail = (e: Error) => {
+    readyReject(e);
+    doneReject(e);
+    clearTimeout(timeout);
+    socket.close();
+  };
+  socket.on("open", () => {
+    socket.send(
+      JSON.stringify({
+        text: " ",
+        voice_settings: {
+          stability: config.stability,
+          similarity_boost: config.similarityBoost,
+          speed: config.speed,
+        },
+      }),
+    );
+    readyResolve();
+  });
+  socket.on("message", (raw) => {
+    const d = parseJson(raw.toString()) as {
+      audio?: string;
+      isFinal?: boolean;
+      error?: string;
+    } | null;
+    if (closed || !d) return;
+    if (d.error) return fail(new Error("ElevenLabs synthesis failed."));
+    if (d.audio) onAudio(d.audio);
+    if (d.isFinal) {
+      final = true;
+      clearTimeout(timeout);
+      doneResolve();
+      socket.close();
+    }
+  });
+  socket.on("error", fail);
+  socket.on("close", () => {
+    if (!final && !closed)
+      fail(new Error("ElevenLabs closed before final audio."));
+  });
+  return {
+    push: async (text) => {
+      await ready;
+      if (!closed && socket.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify({ text: `${text} `, flush: true }));
+    },
+    end: async () => {
+      await ready;
+      if (closed) return;
+      socket.send(JSON.stringify({ text: "" }));
+      await done;
+    },
+    close: () => {
+      closed = true;
+      clearTimeout(timeout);
+      const e = new Error("Synthesis cancelled");
+      readyReject(e);
+      doneReject(e);
+      socket.close();
+    },
   };
 };
-
 export const listElevenLabsVoices = async (): Promise<VoiceOption[]> => {
-  const response = await fetch("https://api.elevenlabs.io/v1/voices", {
+  if (!env.ELEVENLABS_API_KEY)
+    throw new Error("ELEVENLABS_API_KEY is not configured.");
+  const r = await fetch("https://api.elevenlabs.io/v1/voices", {
     headers: { "xi-api-key": env.ELEVENLABS_API_KEY },
+    signal: AbortSignal.timeout(10000),
   });
-  if (!response.ok) throw new Error(`ElevenLabs voices request failed with ${response.status}`);
-  const body = voicesSchema.parse(await response.json());
-  return body.voices.map((voice) => ({ id: voice.voice_id, name: voice.name }));
+  if (!r.ok) throw new Error(`ElevenLabs returned ${r.status}.`);
+  const body = (await r.json()) as {
+    voices: { voice_id: string; name: string }[];
+  };
+  return body.voices.map((v) => ({ id: v.voice_id, name: v.name }));
 };
