@@ -1,5 +1,6 @@
 // Runs before Google Meet's scripts. Only the meeting frame is instrumented;
 // the avatar receiver runs in an uninstrumented, same-origin child frame.
+// FILE: src/server/meetings/browser/media.ts  (replace the entire file with this)
 export interface MeetingMediaBridge {
   ready: Promise<void>;
   audio: (pcm24k: string) => void;
@@ -17,6 +18,12 @@ declare global {
     __aiTwinMediaError: (reason: string) => Promise<void>;
   }
 }
+
+const CAPTURE_FRAME_SAMPLES = 800;
+const MAX_INFLIGHT_PACKETS = 40;
+const MAX_CONSECUTIVE_DROPS = 100;
+const BASE64_CHUNK_BYTES = 0x8000;
+
 export function installMeetingMedia(): void {
   if (window.top !== window || window.__aiTwinMedia) return;
   const input = new AudioContext({ sampleRate: 16000 }),
@@ -43,7 +50,8 @@ export function installMeetingMedia(): void {
     speaking = false,
     seenSpeech = false,
     quietSince = performance.now(),
-    inflight = 0;
+    inflight = 0,
+    consecutiveDrops = 0;
   let nextAt = 0,
     queuedFrames = 0,
     playedFrames = 0;
@@ -85,11 +93,11 @@ export function installMeetingMedia(): void {
   window.RTCPeerConnection = MeetingPeerConnection;
   const ready = (async () => {
     const source = `class Capture extends AudioWorkletProcessor {
-      constructor(){super();this.samples=new Int16Array(320);this.used=0;}
+      constructor(){super();this.samples=new Int16Array(${CAPTURE_FRAME_SAMPLES});this.used=0;}
       process(inputs){const channels=inputs[0];if(!channels?.length)return true;
         for(let i=0;i<channels[0].length;i++){let value=0;for(const channel of channels)value+=channel[i]||0;value/=channels.length;
           this.samples[this.used++]=Math.max(-32768,Math.min(32767,Math.round(value*32767)));
-          if(this.used===320){this.port.postMessage(this.samples.buffer,[this.samples.buffer]);this.samples=new Int16Array(320);this.used=0;}}
+          if(this.used===${CAPTURE_FRAME_SAMPLES}){this.port.postMessage(this.samples.buffer,[this.samples.buffer]);this.samples=new Int16Array(${CAPTURE_FRAME_SAMPLES});this.used=0;}}
         return true;}}
       registerProcessor('ai-twin-capture',Capture);`;
     const url = URL.createObjectURL(
@@ -108,13 +116,18 @@ export function installMeetingMedia(): void {
     silent.connect(input.destination);
     capture.port.onmessage = (event) => {
       if (!sources.size) return;
-      if (inflight >= 10) {
-        fatal("Meeting audio processing cannot keep up.");
+      if (inflight >= MAX_INFLIGHT_PACKETS) {
+        if (++consecutiveDrops >= MAX_CONSECUTIVE_DROPS)
+          fatal("Meeting audio processing cannot keep up.");
         return;
       }
+      consecutiveDrops = 0;
       const bytes = new Uint8Array(event.data as ArrayBuffer);
       let binary = "";
-      for (const byte of bytes) binary += String.fromCharCode(byte);
+      for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES)
+        binary += String.fromCharCode(
+          ...bytes.subarray(offset, offset + BASE64_CHUNK_BYTES),
+        );
       inflight++;
       void window
         .__aiTwinAudio(btoa(binary))
@@ -123,7 +136,6 @@ export function installMeetingMedia(): void {
     };
     await Promise.all([input.resume(), output.resume()]);
   })();
-  // A real MediaStream is returned, so Meet still uses its regular WebRTC path.
   navigator.mediaDevices.getUserMedia = async (constraints) => {
     await ready;
     const tracks: MediaStreamTrack[] = [];

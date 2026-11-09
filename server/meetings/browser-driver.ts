@@ -33,7 +33,9 @@ export function chromiumOptions(headless = true): LaunchOptions {
     headless,
     executablePath: chromiumExecutable(),
     chromiumSandbox: !env.MEET_CHROMIUM_NO_SANDBOX,
+    ignoreDefaultArgs: ["--enable-automation"],
     args: [
+      "--disable-blink-features=AutomationControlled",
       "--autoplay-policy=no-user-gesture-required",
       "--use-fake-ui-for-media-stream",
       "--use-fake-device-for-media-stream",
@@ -57,6 +59,8 @@ export function chromiumOptions(headless = true): LaunchOptions {
       : {}),
   };
 }
+
+
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export class GoogleMeetBrowserDriver implements MeetingDriver {
   private browser?: Browser;
