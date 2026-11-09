@@ -13,6 +13,7 @@ import { delay, shouldInterrupt } from "../speech/timing";
 import { ScreeningGate } from "../calls/screening";
 import { modelTools, phraseTransfer } from "../tools/definitions";
 import { buildSystemPrompt } from "./prompt";
+import { errorDetail } from "../observability/diagnostics";
 
 export class StandardSession implements ConversationSession {
   private readonly output: SpeechOutput;
@@ -35,6 +36,16 @@ export class StandardSession implements ConversationSession {
     private readonly init: SessionInit,
     private readonly deps: EngineDeps,
   ) {
+    init.trace.log("session.initializing", {
+      agentId: init.agent.id,
+      voiceId: init.agent.voiceId,
+      model: init.agent.model,
+      firstMessageMode: init.agent.firstMessageMode,
+      purpose: init.purpose ?? "conversation",
+      direction: init.direction ?? "unknown",
+      inputFormat: init.inputAudioFormat?.encoding ?? "mulaw",
+      outputFormat: init.outputAudioFormat?.encoding ?? "mulaw",
+    });
     this.history.push(...structuredClone(init.history ?? []));
     this.deadline =
       init.deadline ?? Date.now() + init.agent.maxDurationSeconds * 1000;
@@ -48,6 +59,7 @@ export class StandardSession implements ConversationSession {
       this.transcriber = deps.transcribe(
         {
           onSpeechStart: () => {
+            init.trace.log("stt.speech_started");
             this.voicedMs = 0;
             if (!this.turn) this.armIdle();
           },
@@ -57,6 +69,7 @@ export class StandardSession implements ConversationSession {
           },
           onEagerEnd: () => {}, // No side effects or speech until Flux confirms EndOfTurn.
           onResume: () => {
+            init.trace.log("stt.turn_resumed");
             if (this.turn) this.interrupt();
           },
           onEnd: (text) => this.accept(text),
@@ -67,6 +80,7 @@ export class StandardSession implements ConversationSession {
         },
         init.agent.transcriber,
         init.inputAudioFormat,
+        init.trace,
       );
     }
     init.trace.log("session.started", {
@@ -75,6 +89,10 @@ export class StandardSession implements ConversationSession {
     });
     queueMicrotask(() => {
       if (this.closed) return;
+      init.trace.log("session.opening", {
+        mode: init.agent.firstMessageMode,
+        characters: init.agent.firstMessage.length,
+      });
       if (init.purpose === "voicemail")
         this.run(async (signal) => {
           await this.speak(init.agent.voicemailDetection.message, signal);
@@ -213,9 +231,7 @@ export class StandardSession implements ConversationSession {
       })
       .catch(async (error) => {
         if (controller.signal.aborted || this.closed) return;
-        this.init.trace.log("turn.failed", {
-          message: error instanceof Error ? error.message : "unknown",
-        });
+        this.init.trace.log("turn.failed", errorDetail(error));
         if (this.init.purpose === "warm-consultation") {
           await this.end("consultation-provider-error");
           return;
@@ -233,8 +249,13 @@ export class StandardSession implements ConversationSession {
             "Sorry, I couldn't complete that. Please try again.",
             controller.signal,
           );
-        } catch {
-          /* Provider failure is recorded above. */
+        } catch (recoveryError) {
+          this.init.trace.log(
+            "speech.recovery_failed",
+            errorDetail(recoveryError),
+          );
+          if (!controller.signal.aborted)
+            await this.end("speech-provider-error");
         }
       })
       .finally(() => {
@@ -290,6 +311,14 @@ export class StandardSession implements ConversationSession {
       if (opening) messages.push({ role: "system", content: opening });
       let text = "";
       const calls: ToolCall[] = [];
+      const began = Date.now();
+      let first = true;
+      this.init.trace.log("llm.requested", {
+        model: agent.model,
+        round,
+        opening: !!opening,
+        messageCount: messages.length,
+      });
       for await (const delta of this.deps.model.stream(
         {
           messages,
@@ -300,11 +329,22 @@ export class StandardSession implements ConversationSession {
         signal,
       )) {
         signal.throwIfAborted();
+        if (first) {
+          first = false;
+          this.init.trace.log("llm.first_token", { ms: Date.now() - began });
+        }
         if (delta.type === "text") text += delta.text;
         else calls.push(delta.call);
       }
       signal.throwIfAborted();
+      this.init.trace.log("llm.completed", {
+        ms: Date.now() - began,
+        characters: text.length,
+        toolCalls: calls.length,
+      });
       if (!calls.length) {
+        if (!text.trim())
+          throw new Error("OpenAI returned no speech text or tool calls.");
         await this.speak(text, signal);
         return;
       }
@@ -436,6 +476,7 @@ export class StandardSession implements ConversationSession {
   private async end(reason: string): Promise<void> {
     if (this.closed || this.ending) return;
     this.ending = true;
+    this.init.trace.log("call.ending", { reason });
     try {
       await this.deps.endCall?.(this.init.callSid, reason);
     } catch (error) {

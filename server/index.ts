@@ -9,6 +9,7 @@ import { StandardSession } from "./engine/standard-session";
 import { attachMediaServer } from "./http/media";
 import { createAdminApp, createPublicApp, type HttpDeps } from "./http/routes";
 import { logEvent, TraceStore } from "./observability/trace";
+import { configureDiagnostics } from "./observability/diagnostics";
 import { createDeepgramTranscriber } from "./providers/deepgram";
 import {
   createElevenLabsSynthesizer,
@@ -32,6 +33,7 @@ import { MeetingService } from "./meetings/service";
 import { MeetingStore } from "./meetings/store";
 import { GoogleMeetBrowserDriver } from "./meetings/browser-driver";
 import { createLiveAvatar } from "./meetings/liveavatar";
+configureDiagnostics(join(env.DATA_DIR, "logs", "voice-agent.jsonl"));
 const store = new AgentStore(
   assistantSchema.parse({
     name: "Luna",
@@ -125,6 +127,12 @@ const admin = createAdminApp(deps).listen(env.ADMIN_PORT, "127.0.0.1", () =>
 logEvent("configuration", {
   calling_ready: !missingCallConfiguration(twilioSettings.current()).length,
   missing: missingCallConfiguration(twilioSettings.current()).join(", "),
+});
+logEvent("server.endpoints", {
+  publicBaseUrl: env.PUBLIC_BASE_URL || "(not set)",
+  inbound: `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
+  media: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
+  logFile: join(env.DATA_DIR, "logs", "voice-agent.jsonl"),
 });
 void warmTransfers.recoverAfterRestart();
 const shutdown = () => {

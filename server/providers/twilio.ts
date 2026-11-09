@@ -5,6 +5,28 @@ import {
   environmentTwilioCredentials,
   twilioConnectionError,
 } from "./twilio-settings";
+import { errorDetail, writeDiagnostic } from "../observability/diagnostics";
+async function operation<T>(
+  name: string,
+  sid: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const began = Date.now();
+  writeDiagnostic(sid || "system", `twilio.${name}.requested`);
+  try {
+    const result = await action();
+    writeDiagnostic(sid || "system", `twilio.${name}.completed`, {
+      ms: Date.now() - began,
+    });
+    return result;
+  } catch (error) {
+    writeDiagnostic(sid || "system", `twilio.${name}.failed`, {
+      ...errorDetail(error),
+      ms: Date.now() - began,
+    });
+    throw error;
+  }
+}
 export const twilioClient = (credentials: TwilioCredentials): twilio.Twilio =>
   twilio(credentials.accountSid, credentials.authToken, {
     autoRetry: false,
@@ -27,7 +49,9 @@ export const createTwilioTelephony = (
     listNumbers: async () => {
       try {
         return (
-          await client().incomingPhoneNumbers.list({ pageSize: 1000 })
+          await operation("numbers", "", () =>
+            client().incomingPhoneNumbers.list({ pageSize: 1000 }),
+          )
         ).map((n) => ({
           sid: n.sid,
           phoneNumber: n.phoneNumber,
@@ -38,33 +62,42 @@ export const createTwilioTelephony = (
       }
     },
     routeInbound: async (sid, url, statusUrl) => {
-      await client().incomingPhoneNumbers(sid).update({
-        voiceUrl: url,
-        voiceMethod: "POST",
-        statusCallback: statusUrl,
-        statusCallbackMethod: "POST",
-      });
+      await operation("route_inbound", sid, () =>
+        client().incomingPhoneNumbers(sid).update({
+          voiceUrl: url,
+          voiceMethod: "POST",
+          statusCallback: statusUrl,
+          statusCallbackMethod: "POST",
+        }),
+      );
     },
     placeCall: async ({ to, from, url, statusUrl, voicemail }) => {
-      const c = await client().calls.create({
-        to,
-        from,
-        url,
-        method: "POST",
-        statusCallback: statusUrl,
-        statusCallbackMethod: "POST",
-        statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-        ...(voicemail.enabled
-          ? {
-              machineDetection:
-                voicemail.action === "leave-message"
-                  ? "DetectMessageEnd"
-                  : "Enable",
-              machineDetectionTimeout: voicemail.detectionTimeoutSeconds,
-              asyncAmd: "false",
-            }
-          : {}),
-      });
+      const c = await operation("dial", "", () =>
+        client().calls.create({
+          to,
+          from,
+          url,
+          method: "POST",
+          statusCallback: statusUrl,
+          statusCallbackMethod: "POST",
+          statusCallbackEvent: [
+            "initiated",
+            "ringing",
+            "answered",
+            "completed",
+          ],
+          ...(voicemail.enabled
+            ? {
+                machineDetection:
+                  voicemail.action === "leave-message"
+                    ? "DetectMessageEnd"
+                    : "Enable",
+                machineDetectionTimeout: voicemail.detectionTimeoutSeconds,
+                asyncAmd: "false",
+              }
+            : {}),
+        }),
+      );
       return c.sid;
     },
     transferCall: async (sid, d, timeout, statusUrl) => {
@@ -75,10 +108,14 @@ export const createTwilioTelephony = (
           { ...(d.extension ? { sendDigits: d.extension } : {}) },
           d.number,
         );
-      await client().calls(sid).update({ twiml: response.toString() });
+      await operation("transfer", sid, () =>
+        client().calls(sid).update({ twiml: response.toString() }),
+      );
     },
     endCall: async (sid) => {
-      await client().calls(sid).update({ status: "completed" });
+      await operation("hangup", sid, () =>
+        client().calls(sid).update({ status: "completed" }),
+      );
     },
     validateWebhook: (url, params, signature) => {
       const { authToken } = credentials();
@@ -86,8 +123,8 @@ export const createTwilioTelephony = (
         !!authToken && twilio.validateRequest(authToken, signature, url, params)
       );
     },
-    streamTwiml: (url, params) =>
-      `<Response><Connect><Stream url="${escapeXml(url)}">${Object.entries(
+    streamTwiml: (url, params, statusUrl) =>
+      `<Response><Connect><Stream url="${escapeXml(url)}"${statusUrl ? ` statusCallback="${escapeXml(statusUrl)}" statusCallbackMethod="POST"` : ""}>${Object.entries(
         params,
       )
         .map(

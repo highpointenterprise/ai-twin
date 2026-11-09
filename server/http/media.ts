@@ -8,6 +8,12 @@ import type { SessionPool } from "../engine/pool";
 import type { TraceStore } from "../observability/trace";
 import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
+import { randomUUID } from "node:crypto";
+import {
+  writeDiagnostic,
+  errorDetail,
+  redactText,
+} from "../observability/diagnostics";
 const startSchema = z.object({
   event: z.literal("start"),
   start: z.object({
@@ -43,11 +49,29 @@ export function attachMediaServer(
   });
   wss.on("connection", (socket) => {
     let session: ConversationSession | undefined;
-    let sid = "";
-    const timeout = setTimeout(
-      () => socket.close(1008, "Missing start event"),
-      10000,
-    );
+    let sid = "",
+      authenticated = false,
+      inPackets = 0,
+      inBytes = 0,
+      outPackets = 0,
+      outBytes = 0,
+      lastAudioLog = 0;
+    const connectionId = randomUUID(),
+      began = Date.now();
+    const log = (
+      event: string,
+      detail: Record<string, string | number | boolean> = {},
+    ) => {
+      if (sid) deps.traces.for(sid).log(event, { connectionId, ...detail });
+      else writeDiagnostic(connectionId, event, detail);
+    };
+    log("media.socket_connected");
+    const timeout = setTimeout(() => {
+      log("media.start_missing", {
+        hint: "WebSocket opened but Twilio did not send its start event.",
+      });
+      socket.close(1008, "Missing start event");
+    }, 10000);
     const release = () => {
       clearTimeout(timeout);
       if (session) {
@@ -64,25 +88,50 @@ export function attachMediaServer(
           mark?: { name?: string };
           dtmf?: { digit?: string };
         } | null;
-        if (!data) return;
+        if (!data) {
+          log("media.invalid_json");
+          return;
+        }
+        if (data.event === "connected") {
+          log("media.protocol_connected");
+          return;
+        }
         if (data.event === "start") {
           const { start } = startSchema.parse(data),
             p = start.customParameters;
+          sid = start.callSid;
           const context = deps.contexts.get(p.callId);
-          if (
-            session ||
-            deps.pool.isFull ||
-            !context ||
-            context.agent.id !== p.agentId ||
-            context.sid !== start.callSid ||
-            !verifyStreamToken(p.agentId, p.callId, p.token)
-          ) {
+          const reason = session
+            ? "duplicate-start"
+            : deps.pool.isFull
+              ? "capacity"
+              : !context
+                ? "context-missing-or-consumed"
+                : context.agent.id !== p.agentId
+                  ? "assistant-mismatch"
+                  : context.sid !== start.callSid
+                    ? "call-sid-mismatch"
+                    : !verifyStreamToken(p.agentId, p.callId, p.token)
+                      ? "invalid-stream-token"
+                      : "";
+          if (reason) {
+            log("media.rejected", {
+              reason,
+              callId: p.callId,
+              hint: "The webhook and WebSocket must reach the same running backend with the same STREAM_SECRET.",
+            });
             socket.close(1008, "Rejected stream");
             return;
           }
           const snapshot = deps.contexts.take(p.callId, start.callSid)!;
-          sid = start.callSid;
+          authenticated = true;
           clearTimeout(timeout);
+          log("media.started", {
+            streamSid: start.streamSid,
+            agentId: p.agentId,
+            encoding: start.mediaFormat.encoding,
+            sampleRate: start.mediaFormat.sampleRate,
+          });
           session = deps.factory({
             ...snapshot,
             callSid: sid,
@@ -90,35 +139,90 @@ export function attachMediaServer(
             trace: deps.traces.for(sid),
             transportClose: () => socket.close(),
             send: (message) => {
-              if (socket.readyState === socket.OPEN)
-                socket.send(JSON.stringify(message));
+              const event = message as {
+                event?: string;
+                media?: { payload?: string };
+                mark?: { name?: string };
+              };
+              if (socket.readyState !== socket.OPEN) {
+                log("media.send_dropped", {
+                  event: event.event ?? "unknown",
+                  readyState: socket.readyState,
+                });
+                if (event.event === "media" || event.event === "mark")
+                  throw new Error("Twilio media socket is closed.");
+                return;
+              }
+              socket.send(JSON.stringify(message), (error) => {
+                if (error) log("media.send_failed", errorDetail(error));
+              });
+              if (event.event === "media" && event.media?.payload) {
+                outPackets++;
+                outBytes += Buffer.from(event.media.payload, "base64").length;
+                if (outPackets === 1)
+                  log("media.first_outbound_audio", { bytes: outBytes });
+              } else
+                log("media.sent", {
+                  event: event.event ?? "unknown",
+                  mark: event.mark?.name ?? "",
+                });
             },
           });
           if (snapshot.resumeTransferId)
             deps.onResumed?.(snapshot.resumeTransferId, sid);
           deps.pool.add(session);
           deps.registry.update(sid, "in-progress");
+          log("media.session_ready");
         } else if (
           data.event === "media" &&
           typeof data.media?.payload === "string"
-        )
+        ) {
+          inPackets++;
+          inBytes += Buffer.from(data.media.payload, "base64").length;
+          if (inPackets === 1 || Date.now() - lastAudioLog >= 5000) {
+            lastAudioLog = Date.now();
+            log("media.audio_progress", {
+              inPackets,
+              inBytes,
+              outPackets,
+              outBytes,
+              sessionReady: !!session,
+            });
+          }
           session?.pushAudio(data.media.payload);
-        else if (data.event === "mark" && typeof data.mark?.name === "string")
+        } else if (data.event === "mark" && typeof data.mark?.name === "string")
           session?.handleMark(data.mark.name);
         else if (data.event === "dtmf" && typeof data.dtmf?.digit === "string")
           session?.handleDtmf?.(data.dtmf.digit);
         else if (data.event === "stop") {
+          log("media.stop_received");
           release();
           socket.close();
         }
-      } catch {
-        if (sid) deps.traces.for(sid).log("media.invalid_event");
+      } catch (error) {
+        log("media.invalid_event", errorDetail(error));
+        if (authenticated)
+          deps.registry.patch(sid, { endedReason: "media-session-error" });
         socket.close(1008, "Invalid media event");
         release();
       }
     });
-    socket.on("close", release);
-    socket.on("error", release);
+    socket.on("close", (code, reason) => {
+      log("media.socket_closed", {
+        code,
+        reason: redactText(reason.toString()).slice(0, 300),
+        inPackets,
+        inBytes,
+        outPackets,
+        outBytes,
+        ms: Date.now() - began,
+      });
+      release();
+    });
+    socket.on("error", (error) => {
+      log("media.socket_failed", errorDetail(error));
+      release();
+    });
   });
   return wss;
 }

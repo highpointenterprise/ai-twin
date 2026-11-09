@@ -16,6 +16,7 @@ import type { AgentStore } from "../store/agents";
 import type { ToolRegistry } from "../tools/registry";
 import { HttpError } from "../core/errors";
 import { StandardSession } from "../engine/standard-session";
+import { effectiveAssistant } from "../engine/settings";
 import { TraceStore } from "../observability/trace";
 import type {
   MeetingDriver,
@@ -96,7 +97,7 @@ export class MeetingService {
     if (this.closed)
       throw new HttpError(503, "Meeting workers are shutting down.");
     const input = meetingInputSchema.parse(value),
-      agent = structuredClone(this.deps.agents.get(input.agentId));
+      agent = effectiveAssistant(this.deps.agents.get(input.agentId));
     const tools = structuredClone(
       this.deps.tools.resolve(agent.toolIds),
     ).filter((t) => t.type === "function");

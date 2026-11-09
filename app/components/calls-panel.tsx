@@ -216,6 +216,10 @@ export function CallsPanel({
             )}
           </div>
           <p className="mono subtle">{active.sid}</p>
+          <p className="hint">
+            For webhook, provider and audio delivery details, open Diagnostics
+            and filter by this Call SID.
+          </p>
           <p>
             {active.status}{" "}
             {active.screeningEncountered ? "· Screening encountered" : ""}{" "}

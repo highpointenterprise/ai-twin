@@ -26,7 +26,7 @@ Open **Phone numbers → Connect Twilio**, enter your Account SID and Auth Token
 
 For the remaining providers, copy `.env.example` to `.env` **only if `.env` does not already exist**, and supply credentials securely. Never commit `.env`. Twilio credentials can also be configured using `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` on the server.
 
-Loading numbers requires only a working Twilio connection. AI calling additionally requires `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `PUBLIC_BASE_URL`, and `STREAM_SECRET` (a private random string of at least 32 characters). Set an ElevenLabs voice ID per assistant, or set `ELEVENLABS_VOICE_ID` before the first startup to seed the initial assistant. `TWILIO_PHONE_NUMBER` is an optional outbound fallback and must belong to the connected Twilio account.
+Loading numbers requires only a working Twilio connection. AI calling additionally requires `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `PUBLIC_BASE_URL`, and `STREAM_SECRET` (a private random string of at least 32 characters). Set an ElevenLabs voice ID per assistant, or set `ELEVENLABS_VOICE_ID` as the default for assistants whose voice field is blank. Explicit assistant voices take precedence. `TWILIO_PHONE_NUMBER` is an optional outbound fallback and must belong to the connected Twilio account.
 
 `PUBLIC_BASE_URL` must be a public HTTPS **origin** forwarded to port 8080, with WebSocket support for `/media`. The README originally suggested `ngrok http 8080`; an installed/authenticated ngrok or another suitable tunnel can supply that origin. Never forward the admin service to the public Internet. Keep `ADMIN_PORT=8081` unless you also update the Next.js rewrite.
 
@@ -38,6 +38,12 @@ Required outbound hosts: `api.twilio.com`, `api.deepgram.com`, `api.openai.com`,
 4. Click **Make a call** beside a number to select it as the outbound caller ID, or start a call under **Calls**. Call an assigned number for inbound conversations. Inspect the call state, transcript, and tool events.
 
 See [Twilio connection and credential storage](docs/twilio-connection.md) for account changes, storage and troubleshooting.
+
+## Troubleshoot silent or missing calls
+
+Open **Diagnostics** to view webhook, media, transcription, model, synthesis and playback stages. Filter by a full Twilio Call SID and use **Download logs** to export recent events. The same events appear in the backend terminal and persist in `DATA_DIR/logs/voice-agent.jsonl` with two rotated backups. Credentials and raw audio are excluded; conversation text may appear.
+
+For ngrok, run `ngrok http 8080`, set `PUBLIC_BASE_URL` to its current **HTTPS origin**, restart the backend, then use **Phone numbers → Refresh inbound route** for each assigned number. A changed tunnel URL does not automatically update Twilio's saved number webhook. See [call troubleshooting and log interpretation](docs/call-troubleshooting.md).
 
 ## Features in this increment
 

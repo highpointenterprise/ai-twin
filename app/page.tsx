@@ -11,6 +11,7 @@ import { ToolEditor } from "./components/tool-editor";
 import { CallsPanel } from "./components/calls-panel";
 import { api } from "./components/api";
 import { MeetingsPanel } from "./components/meetings-panel";
+import { DiagnosticsPanel } from "./components/diagnostics-panel";
 import { Button } from "../components/ui/button";
 import { TwilioConnection } from "./components/twilio-connection";
 import type {
@@ -23,6 +24,7 @@ const sections = [
   "Tools",
   "Phone numbers",
   "Calls",
+  "Diagnostics",
 ] as const;
 export default function Page() {
   const [section, setSection] = useState<(typeof sections)[number]>("Meetings"),
@@ -177,32 +179,35 @@ export default function Page() {
             {notice}
           </div>
         )}
-        {section !== "Meetings" && missing.length > 0 && (
-          <details className="setup">
-            <summary>
-              Configure provider credentials to enable live calling
-            </summary>
-            <p>
-              You can create assistants and tools now. Missing configuration:
-            </p>
-            <ul>
-              {missing.map((n) => (
-                <li key={n}>
-                  <code>{n}</code>
-                </li>
-              ))}
-            </ul>
-            <p>
-              Connect Twilio in Phone numbers. Set the remaining provider
-              credentials and public callback URL on the server, then restart
-              it. Each assistant also needs an ElevenLabs voice ID.
-            </p>
-          </details>
-        )}
+        {section !== "Meetings" &&
+          section !== "Diagnostics" &&
+          missing.length > 0 && (
+            <details className="setup">
+              <summary>
+                Configure provider credentials to enable live calling
+              </summary>
+              <p>
+                You can create assistants and tools now. Missing configuration:
+              </p>
+              <ul>
+                {missing.map((n) => (
+                  <li key={n}>
+                    <code>{n}</code>
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Connect Twilio in Phone numbers. Set the remaining provider
+                credentials and public callback URL on the server, then restart
+                it. Each assistant also needs an ElevenLabs voice ID.
+              </p>
+            </details>
+          )}
         {!loaded && !error && (
           <div className="empty">Loading your workspace…</div>
         )}
         {section === "Meetings" && loaded && <MeetingsPanel agents={agents} />}
+        {section === "Diagnostics" && <DiagnosticsPanel />}
         {section === "Assistants" && (
           <div className="assistant-layout">
             <div className="assistant-list">
@@ -360,6 +365,28 @@ export default function Page() {
                         ))}
                       </select>
                     </label>
+                    {n.agentId && (
+                      <Button
+                        variant="outline"
+                        disabled={saving}
+                        onClick={() => {
+                          setSaving(true);
+                          setError("");
+                          void api(`/numbers/${n.sid}/assign`, "POST", {
+                            agentId: n.agentId,
+                          })
+                            .then(() =>
+                              setNotice(
+                                "Inbound route updated to the current public URL.",
+                              ),
+                            )
+                            .catch((e) => setError(e.message))
+                            .finally(() => setSaving(false));
+                        }}
+                      >
+                        Refresh inbound route
+                      </Button>
+                    )}
                     <button
                       className="ghost"
                       onClick={() => {

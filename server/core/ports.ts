@@ -20,6 +20,7 @@ export interface TranscriberEvents {
   onEnd: (text: string) => void;
   onError: (error: Error) => void;
 }
+export type ProviderTrace = Pick<CallTrace, "log">;
 
 export interface Transcriber {
   sendAudio: (chunk: Buffer) => void;
@@ -30,6 +31,7 @@ export type TranscriberFactory = (
   events: TranscriberEvents,
   config?: AgentConfig["transcriber"],
   format?: AudioFormat,
+  trace?: ProviderTrace,
 ) => Transcriber;
 
 export interface SpeechSynthesizer {
@@ -43,6 +45,7 @@ export type SynthesizerFactory = (
   onAudio: (base64: string) => void,
   config?: AgentConfig["voice"],
   format?: AudioFormat,
+  trace?: ProviderTrace,
 ) => SpeechSynthesizer;
 
 export interface ChatMessage {
@@ -161,7 +164,11 @@ export interface Telephony {
     params: Record<string, string>,
     signature: string,
   ) => boolean;
-  streamTwiml: (wsUrl: string, params: Record<string, string>) => string;
+  streamTwiml: (
+    wsUrl: string,
+    params: Record<string, string>,
+    statusUrl?: string,
+  ) => string;
   rejectTwiml: (message: string) => string;
 }
 

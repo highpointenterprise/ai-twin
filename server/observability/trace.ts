@@ -1,19 +1,17 @@
-import type { CallTraceView, TraceEvent, TranscriptLine } from "../../lib/types";
+import type {
+  CallTraceView,
+  TraceEvent,
+  TranscriptLine,
+} from "../../lib/types";
+import { safeDetail, writeDiagnostic } from "./diagnostics";
 
 type Detail = TraceEvent["detail"];
 
 const MAX_EVENTS = 600;
 const MAX_TRACES = 100;
 
-const format = (sid: string, at: number, event: string, detail: Detail): string => {
-  const fields = Object.entries(detail)
-    .map(([key, value]) => `${key}=${typeof value === "string" ? JSON.stringify(value) : value}`)
-    .join(" ");
-  return `${new Date(at).toISOString().slice(11, 23)} [${sid}] ${event}${fields ? ` ${fields}` : ""}`;
-};
-
 export const logEvent = (event: string, detail: Detail = {}): void => {
-  console.log(format("system", Date.now(), event, detail));
+  writeDiagnostic("system", event, detail);
 };
 
 export class CallTrace {
@@ -27,15 +25,19 @@ export class CallTrace {
 
   log(event: string, detail: Detail = {}): void {
     const at = Date.now();
+    detail = safeDetail(detail);
     this.events.push({ at, event, detail });
     if (this.events.length > MAX_EVENTS) this.events.shift();
-    console.log(format(this.sid.slice(-8), at, event, detail));
+    writeDiagnostic(this.sid, event, detail);
   }
 
   say(role: TranscriptLine["role"], text: string, latencyMs?: number): void {
     this.transcript.push({ at: Date.now(), role, text, latencyMs });
     if (latencyMs !== undefined) this.latencies.push(latencyMs);
-    this.log(`transcript.${role}`, latencyMs === undefined ? { text } : { text, latency_ms: latencyMs });
+    this.log(
+      `transcript.${role}`,
+      latencyMs === undefined ? { text } : { text, latency_ms: latencyMs },
+    );
   }
 
   finish(): void {
@@ -49,10 +51,6 @@ export class CallTrace {
       p50_latency_ms: stats.p50LatencyMs,
       max_latency_ms: stats.maxLatencyMs,
     });
-    const lines = this.transcript.map(
-      (line) => `${line.role === "agent" ? "AGENT " : "CALLER"}${line.latencyMs === undefined ? "" : ` (${line.latencyMs}ms)`}: ${line.text}`,
-    );
-    console.log(`--- transcript [${this.sid.slice(-8)}] ---\n${lines.join("\n")}\n--- end transcript ---`);
   }
 
   view(): CallTraceView {
@@ -80,7 +78,8 @@ export class TraceStore {
     if (existing) return existing;
     const created = new CallTrace(sid);
     this.traces.set(sid, created);
-    if (this.traces.size > MAX_TRACES) this.traces.delete(this.traces.keys().next().value as string);
+    if (this.traces.size > MAX_TRACES)
+      this.traces.delete(this.traces.keys().next().value as string);
     return created;
   }
 

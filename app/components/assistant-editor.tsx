@@ -162,7 +162,7 @@ export function AssistantEditor({
             <input
               value={a.voiceId}
               onChange={(e) => set("voiceId", e.target.value)}
-              placeholder="Paste an ElevenLabs voice ID"
+              placeholder="ElevenLabs voice ID, or leave blank for server default"
             />
           </label>
           <label>
