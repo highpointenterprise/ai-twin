@@ -5,3 +5,6 @@ next-env.d.ts
 
 .data
 *.tsbuildinfo
+**/twilio-credentials.enc.json
+**/.credentials.key
+**/google-meet-storage-state.json

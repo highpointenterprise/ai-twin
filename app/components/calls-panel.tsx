@@ -20,10 +20,12 @@ export function CallsPanel({
   agents,
   numbers,
   onError,
+  initialFrom = "",
 }: {
   agents: AgentConfig[];
   numbers: PhoneNumberView[];
   onError: (s: string) => void;
+  initialFrom?: string;
 }) {
   const [calls, setCalls] = useState<CallRecord[]>([]),
     [selected, setSelected] = useState("");
@@ -31,7 +33,7 @@ export function CallsPanel({
   const [trace, setTrace] = useState<CallTraceView | null>(null);
   const [agentId, setAgent] = useState(agents[0]?.id ?? ""),
     [to, setTo] = useState(""),
-    [from, setFrom] = useState(""),
+    [from, setFrom] = useState(initialFrom),
     [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -214,6 +216,10 @@ export function CallsPanel({
             )}
           </div>
           <p className="mono subtle">{active.sid}</p>
+          <p className="hint">
+            For webhook, provider and audio delivery details, open Diagnostics
+            and filter by this Call SID.
+          </p>
           <p>
             {active.status}{" "}
             {active.screeningEncountered ? "· Screening encountered" : ""}{" "}

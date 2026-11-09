@@ -158,6 +158,9 @@ test("outbound admission snapshots settings and handles an early failed status c
   });
   const d = deps();
   const a = d.store.list()[0];
+  d.telephony.listNumbers = async () => [
+    { sid: "PN-test", phoneNumber: "+14155550100", label: "Test number" },
+  ];
   const publicHttp = await listen(createPublicApp(d));
   const adminHttp = await listen(createAdminApp(d));
   t.after(() => {

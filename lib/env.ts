@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TwilioCredentials } from "./twilio";
 const schema = z.object({
   TWILIO_ACCOUNT_SID: z.string().default(""),
   TWILIO_AUTH_TOKEN: z.string().default(""),
@@ -20,9 +21,29 @@ const schema = z.object({
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),
   DATA_DIR: z.string().default(".data"),
   FUNCTION_ALLOWED_HOSTS: z.string().default(""),
+  LIVEAVATAR_API_KEY: z.string().default(""),
+  LIVEAVATAR_AVATAR_ID: z.string().default(""),
+  CHROMIUM_EXECUTABLE_PATH: z.string().default(""),
+  MEET_GOOGLE_STORAGE_STATE_PATH: z.string().default(""),
+  MEET_CHROMIUM_NO_SANDBOX: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  MAX_CONCURRENT_MEETINGS: z.coerce.number().int().min(1).max(10).default(2),
 });
 export const env = schema.parse(process.env);
-export const missingCallConfiguration = (): string[] => {
+export const missingCallConfiguration = (
+  twilio?: TwilioCredentials,
+): string[] => {
+  const configured = {
+    ...env,
+    ...(twilio
+      ? {
+          TWILIO_ACCOUNT_SID: twilio.accountSid,
+          TWILIO_AUTH_TOKEN: twilio.authToken,
+        }
+      : {}),
+  };
   const names = [
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
@@ -30,10 +51,10 @@ export const missingCallConfiguration = (): string[] => {
     "OPENAI_API_KEY",
     "ELEVENLABS_API_KEY",
   ] as const;
-  const missing: string[] = names.filter((k) => !env[k]);
+  const missing: string[] = names.filter((k) => !configured[k]);
   if (
-    env.TWILIO_ACCOUNT_SID &&
-    !/^AC[a-f0-9]{32}$/i.test(env.TWILIO_ACCOUNT_SID)
+    configured.TWILIO_ACCOUNT_SID &&
+    !/^AC[a-f0-9]{32}$/i.test(configured.TWILIO_ACCOUNT_SID)
   )
     missing.push("TWILIO_ACCOUNT_SID (invalid)");
   try {

@@ -8,5 +8,6 @@ export class HttpError extends Error {
 }
 
 export const logError = (error: unknown): void => {
-  console.error(error instanceof Error ? error.message : error);
+  writeDiagnostic("system", "operation.failed", errorDetail(error));
 };
+import { errorDetail, writeDiagnostic } from "../observability/diagnostics";

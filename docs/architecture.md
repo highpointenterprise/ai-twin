@@ -1,9 +1,14 @@
-# Calling module architecture
+# Voice agent architecture
 
 ```mermaid
 flowchart LR
-  UI[Workspace: assistants / tools / numbers / calls] --> Admin[Loopback admin API]
+  UI[Dashboard: meetings / assistants / tools / numbers / calls] --> Admin[Loopback admin API]
   Admin --> Stores[Assistant + tool + call stores]
+  Admin --> Meetings[Meeting lifecycle service]
+  Meetings --> Browser[Self-hosted Chromium worker]
+  Browser --> Meet[Google Meet]
+  Browser --> PCM[Remote audio: PCM 16 kHz]
+  PCM --> Session
   Phone[Twilio inbound / outbound] --> Hooks[Signed call webhooks]
   Hooks --> AMD[Voicemail decision]
   AMD --> Media[Authenticated media transport]
@@ -25,6 +30,14 @@ flowchart LR
   LLM --> Output[Speech output + playback acknowledgements]
   Output --> TTS[ElevenLabs]
   TTS --> Media
+  TTS --> MeetingOutput[Meeting output: PCM 24 kHz]
+  MeetingOutput --> Mic[Virtual microphone]
+  MeetingOutput --> Avatar[HeyGen LiveAvatar LITE]
+  Avatar --> Receiver[Isolated LiveKit receiver]
+  Receiver --> Mic
+  Receiver --> Camera[Virtual camera]
+  Mic --> Browser
+  Camera --> Browser
 ```
 
 - `lib/config.ts`: shared validated contracts. Provider restrictions and settings are explicit.
@@ -35,6 +48,7 @@ flowchart LR
 - `server/engine/`: per-call orchestration. Partial/eager transcripts cannot execute tools. Interrupted work settles before the next conversational group starts, preserving OpenAI tool protocol ordering. No automatic retry of custom-function side effects.
 - `server/transfers/`: Twilio conference/hold TwiML, private consultation, fixed-prompt acceptance verification, and persisted warm-transfer state machine. A coordinator owns the handoff independently of the original media session's cancellation. Its only consultation tools are `transferSuccessful` and `transferCancel`.
 - `server/http/`: signed Twilio webhooks and media input; separate loopback admin API for CRUD and call control.
+- `server/meetings/`: independent browser driver, lifecycle service, persistence, meeting playback and HeyGen adapter. A meeting reuses `StandardSession` with PCM formats and an `AudioOutputPort`, while Twilio defaults remain 8 kHz mu-law. Browser assets are bundled locally with esbuild; avatar tokens are only passed to the worker's isolated receiver.
 - `server/store/`: atomic JSON persistence for assistant configurations, assignments, tools and recent call records. Per-call snapshots freeze assistant and tool settings at call creation. Stream context is bound to the actual call SID and consumed once.
 - `app/components/`: assistant settings, reusable tool editor, call controls/history.
 
@@ -59,4 +73,6 @@ Warm-transfer snapshots and progress persist separately in `warm-transfers.json`
 
 The admin API binds to loopback, and Next.js proxies `/api` to port 8081. Only the voice service on 8080 should receive Twilio public callbacks. There is no multi-user authentication yet; this is a local development workspace, not a public SaaS deployment.
 
-The session currently accepts Twilio-shaped output messages through its `send` port. Meeting support will need a transport adapter and codec/playback mapping. HeyGen/Google Meet are not implemented, and compatibility has not been assumed.
+Meeting admission precedes AI/avatar startup. Only attached custom functions are available in meetings. Cancellation closes the browser, transcriber, generation and avatar; late admission/render callbacks cannot revive a stopped session. Voice-only playback acknowledges actual browser audio completion; avatar playback combines provider event correlation with observed media drain. The avatar receiver uses a separate frame so its WebRTC audio is never transcribed as customer speech.
+
+Meeting status records persist in `meetings.json`; browser cookies and provider tokens are never included. Restart marks unfinished meetings failed and requires a new join. Chromium workers are bounded by `MAX_CONCURRENT_MEETINGS` separately from phone calls. See [Google Meet setup and live-validation limits](google-meet.md). Real Meet UI compatibility, provider audio and lip sync still require deployment testing.

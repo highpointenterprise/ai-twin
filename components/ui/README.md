@@ -1,0 +1,1 @@
+Button, Card and Input are adapted from the official [shadcn/ui New York registry](https://github.com/shadcn-ui/ui/tree/main/apps/v4/registry/new-york-v4/ui). The local Button imports Radix Slot directly; the application uses a small monochrome Tailwind theme. See [LICENSE.md](LICENSE.md) for the upstream MIT license.

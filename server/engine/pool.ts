@@ -8,6 +8,9 @@ export class SessionPool {
   get isFull(): boolean {
     return this.sessions.size >= this.capacity;
   }
+  get size(): number {
+    return this.sessions.size;
+  }
 
   add(session: ConversationSession): void {
     this.sessions.add(session);

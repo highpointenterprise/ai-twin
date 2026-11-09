@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   assistantSchema,
   type ToolConfig,
@@ -10,10 +10,24 @@ import { AssistantEditor } from "./components/assistant-editor";
 import { ToolEditor } from "./components/tool-editor";
 import { CallsPanel } from "./components/calls-panel";
 import { api } from "./components/api";
-const sections = ["Assistants", "Tools", "Phone numbers", "Calls"] as const;
+import { MeetingsPanel } from "./components/meetings-panel";
+import { DiagnosticsPanel } from "./components/diagnostics-panel";
+import { Button } from "../components/ui/button";
+import { TwilioConnection } from "./components/twilio-connection";
+import type {
+  TwilioConnectionResult,
+  TwilioConnectionStatus,
+} from "../lib/twilio";
+const sections = [
+  "Meetings",
+  "Assistants",
+  "Tools",
+  "Phone numbers",
+  "Calls",
+  "Diagnostics",
+] as const;
 export default function Page() {
-  const [section, setSection] =
-      useState<(typeof sections)[number]>("Assistants"),
+  const [section, setSection] = useState<(typeof sections)[number]>("Meetings"),
     [agents, setAgents] = useState<AgentConfig[]>([]),
     [tools, setTools] = useState<ToolConfig[]>([]),
     [numbers, setNumbers] = useState<PhoneNumberView[]>([]);
@@ -25,28 +39,52 @@ export default function Page() {
     [saving, setSaving] = useState(false),
     [missing, setMissing] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false);
+  const [twilio, setTwilio] = useState<TwilioConnectionStatus | null>(null);
+  const [loadingNumbers, setLoadingNumbers] = useState(false);
+  const [preferredFrom, setPreferredFrom] = useState("");
+  const numbersRequest = useRef(0);
   const onError = useCallback((s: string) => setError(s), []);
   const loadNumbers = useCallback(async () => {
+    const request = ++numbersRequest.current;
+    setLoadingNumbers(true);
+    setError("");
     try {
-      setNumbers(await api<PhoneNumberView[]>("/numbers"));
+      const numbers = await api<PhoneNumberView[]>("/numbers");
+      if (request === numbersRequest.current) setNumbers(numbers);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Cannot load numbers.");
+      if (request === numbersRequest.current)
+        setError(e instanceof Error ? e.message : "Cannot load numbers.");
+    } finally {
+      if (request === numbersRequest.current) setLoadingNumbers(false);
     }
   }, []);
+  const connected = (result: TwilioConnectionResult) => {
+    numbersRequest.current++;
+    setLoadingNumbers(false);
+    setNumbers(result.numbers);
+    setTwilio(result.connection);
+    setMissing(result.missing);
+    setPreferredFrom("");
+    setError("");
+    setNotice(
+      `Twilio connected. ${result.numbers.length} phone ${result.numbers.length === 1 ? "number" : "numbers"} loaded.`,
+    );
+  };
   useEffect(() => {
     void Promise.all([
       api<AgentConfig[]>("/agents"),
       api<ToolConfig[]>("/tools"),
-      api<{ missing: string[] }>("/health"),
+      api<{ missing: string[]; twilio: TwilioConnectionStatus }>("/health"),
     ])
       .then(([a, t, h]) => {
         setAgents(a);
         setTools(t);
         setMissing(h.missing);
+        setTwilio(h.twilio);
         setSelected(a[0]?.id ?? "");
         setDraft(a[0] ?? null);
         setLoaded(true);
-        if (!h.missing.some((n) => n.startsWith("TWILIO"))) void loadNumbers();
+        if (h.twilio.configured) void loadNumbers();
       })
       .catch((e) => setError(e.message));
   }, [loadNumbers]);
@@ -89,107 +127,61 @@ export default function Page() {
     setNotice("Tool saved. Attach it to an assistant to use it on calls.");
   };
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <a className="brand" href="/" aria-label="AI Twin home">
-          <span className="brand-icon">◈</span> AI TWIN
-        </a>
-        <p className="workspace-label">VOICE WORKSPACE</p>
-        <nav>
-          {sections.map((s, i) => (
-            <button
+    <div className="mx-auto max-w-6xl space-y-5 p-4 md:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">AI Twin</h1>
+        <nav className="flex flex-wrap gap-2" aria-label="Dashboard">
+          {sections.map((s) => (
+            <Button
               key={s}
-              className={section === s ? "active" : ""}
+              variant={section === s ? "default" : "outline"}
               onClick={() => {
                 setSection(s);
                 setError("");
                 setNotice("");
               }}
             >
-              <span aria-hidden="true">{["◉", "⌘", "#", "↗"][i]}</span>
               {s}
-            </button>
+            </Button>
           ))}
         </nav>
-        <div className="stack">
-          <span className="eyebrow">YOUR CALLING STACK</span>
-          {[
-            "Twilio · Telephony",
-            "Deepgram · Transcriber",
-            "ElevenLabs · Voice",
-            "OpenAI · Model",
-          ].map((p) => (
-            <div key={p}>
-              <span className="dot" />
-              {p}
-            </div>
-          ))}
+      </header>
+      <main className="space-y-4">
+        <div className="section-head">
+          <h2>{section}</h2>
+          {section === "Assistants" ? (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSelected("");
+                setDraft(
+                  assistantSchema.parse({
+                    name: "New assistant",
+                    systemPrompt:
+                      "You are a helpful voice assistant. Be concise and use attached tools when appropriate.",
+                  }),
+                );
+              }}
+            >
+              + New assistant
+            </Button>
+          ) : section === "Tools" ? (
+            <Button onClick={() => setToolEdit("new")}>+ Create tool</Button>
+          ) : null}
         </div>
-        <p className="sidebar-footer">
-          One conversation engine.
-          <br />
-          Connected, independent modules.
-        </p>
-      </aside>
-      <div className="workspace">
-        <header>
-          <span>
-            Workspace <span className="slash">/</span> {section}
-          </span>
-          <span className={missing.length ? "badge pending" : "badge"}>
-            {!loaded
-              ? "Connecting…"
-              : missing.length
-                ? "Setup needed for live calls"
-                : "Calling configured"}
-          </span>
-        </header>
-        <main>
-          <div className="page-title">
-            <div>
-              <p className="eyebrow">BUILD CONVERSATIONS THAT CONNECT</p>
-              <h1>{section}</h1>
-              <p className="subtle">
-                {section === "Assistants"
-                  ? "Define how your assistant listens, speaks, and takes action."
-                  : section === "Tools"
-                    ? "Build reusable actions and connect them to any assistant."
-                    : section === "Phone numbers"
-                      ? "Route incoming calls and choose your outbound caller ID."
-                      : "Start conversations and inspect what happened."}
-              </p>
-            </div>
-            {section === "Assistants" ? (
-              <button
-                className="ghost"
-                onClick={() => {
-                  setSelected("");
-                  setDraft(
-                    assistantSchema.parse({
-                      name: "New assistant",
-                      systemPrompt:
-                        "You are a helpful voice assistant. Be concise and use attached tools when appropriate.",
-                    }),
-                  );
-                }}
-              >
-                + New assistant
-              </button>
-            ) : section === "Tools" ? (
-              <button onClick={() => setToolEdit("new")}>+ Create tool</button>
-            ) : null}
+        {error && (
+          <div role="alert" className="notice error">
+            {error}
           </div>
-          {error && (
-            <div role="alert" className="notice error">
-              {error}
-            </div>
-          )}
-          {notice && (
-            <div role="status" className="notice success">
-              {notice}
-            </div>
-          )}
-          {missing.length > 0 && (
+        )}
+        {notice && (
+          <div role="status" className="notice success">
+            {notice}
+          </div>
+        )}
+        {section !== "Meetings" &&
+          section !== "Diagnostics" &&
+          missing.length > 0 && (
             <details className="setup">
               <summary>
                 Configure provider credentials to enable live calling
@@ -205,120 +197,130 @@ export default function Page() {
                 ))}
               </ul>
               <p>
-                Set credentials securely on the server, then restart it. Each
-                assistant also needs an ElevenLabs voice ID.
+                Connect Twilio in Phone numbers. Set the remaining provider
+                credentials and public callback URL on the server, then restart
+                it. Each assistant also needs an ElevenLabs voice ID.
               </p>
             </details>
           )}
-          {!loaded && !error && (
-            <div className="empty">Loading your workspace…</div>
-          )}
-          {section === "Assistants" && (
-            <div className="assistant-layout">
-              <div className="assistant-list">
-                {agents.map((a) => (
-                  <button
-                    key={a.id}
-                    className={selected === a.id ? "selected" : ""}
-                    onClick={() => {
-                      setSelected(a.id);
-                      setDraft(a);
-                    }}
-                  >
-                    <span className="avatar">{a.name.charAt(0)}</span>
-                    <span>
-                      <strong>{a.name}</strong>
-                      <small>
-                        {a.toolIds.length} tools · {a.model}
-                      </small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <section className="editor">
-                {draft && (
-                  <AssistantEditor
-                    key={selected || "new"}
-                    value={draft}
-                    onChange={setDraft}
-                    tools={tools}
-                    onSave={() => void saveAssistant()}
-                    busy={saving}
-                  />
-                )}
-              </section>
+        {!loaded && !error && (
+          <div className="empty">Loading your workspace…</div>
+        )}
+        {section === "Meetings" && loaded && <MeetingsPanel agents={agents} />}
+        {section === "Diagnostics" && <DiagnosticsPanel />}
+        {section === "Assistants" && (
+          <div className="assistant-layout">
+            <div className="assistant-list">
+              {agents.map((a) => (
+                <button
+                  key={a.id}
+                  className={selected === a.id ? "selected" : ""}
+                  onClick={() => {
+                    setSelected(a.id);
+                    setDraft(a);
+                  }}
+                >
+                  <span className="avatar">{a.name.charAt(0)}</span>
+                  <span>
+                    <strong>{a.name}</strong>
+                    <small>
+                      {a.toolIds.length} tools · {a.model}
+                    </small>
+                  </span>
+                </button>
+              ))}
             </div>
-          )}
-          {section === "Tools" &&
-            (toolEdit ? (
-              <section className="editor">
-                <ToolEditor
-                  key={toolEdit === "new" ? "new" : toolEdit.id}
-                  existing={toolEdit === "new" ? undefined : toolEdit}
-                  onSave={saveTool}
-                  onCancel={() => setToolEdit(null)}
+            <section className="editor">
+              {draft && (
+                <AssistantEditor
+                  key={selected || "new"}
+                  value={draft}
+                  onChange={setDraft}
+                  tools={tools}
+                  onSave={() => void saveAssistant()}
+                  busy={saving}
                 />
-              </section>
-            ) : (
-              <div className="tool-grid">
-                {tools.length ? (
-                  tools.map((t) => (
-                    <section className="tool-card" key={t.id}>
-                      <span className="badge">
-                        {t.type === "transferCall"
-                          ? t.transferMode === "warm"
-                            ? "Warm transfer"
-                            : "Blind transfer"
-                          : t.type === "dtmf"
-                            ? "DTMF / IVR"
-                            : "Custom function"}
-                      </span>
-                      <h2>{t.name}</h2>
-                      <p>{t.description}</p>
-                      <div className="row">
-                        <button
-                          className="ghost"
-                          onClick={() => setToolEdit(t)}
-                        >
-                          Edit tool
-                        </button>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            void api(`/tools/${t.id}`, "DELETE")
-                              .then(() =>
-                                setTools((ts) =>
-                                  ts.filter((v) => v.id !== t.id),
-                                ),
-                              )
-                              .catch((e) => setError(e.message))
-                          }
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </section>
-                  ))
-                ) : (
-                  <section className="empty">
-                    <h2>Give your assistants the tools to act.</h2>
-                    <p>
-                      Create transfers, navigate IVRs, or connect your own
-                      functions.
-                    </p>
-                    <button onClick={() => setToolEdit("new")}>
-                      Create your first tool
-                    </button>
+              )}
+            </section>
+          </div>
+        )}
+        {section === "Tools" &&
+          (toolEdit ? (
+            <section className="editor">
+              <ToolEditor
+                key={toolEdit === "new" ? "new" : toolEdit.id}
+                existing={toolEdit === "new" ? undefined : toolEdit}
+                onSave={saveTool}
+                onCancel={() => setToolEdit(null)}
+              />
+            </section>
+          ) : (
+            <div className="tool-grid">
+              {tools.length ? (
+                tools.map((t) => (
+                  <section className="tool-card" key={t.id}>
+                    <span className="badge">
+                      {t.type === "transferCall"
+                        ? t.transferMode === "warm"
+                          ? "Warm transfer"
+                          : "Blind transfer"
+                        : t.type === "dtmf"
+                          ? "DTMF / IVR"
+                          : "Custom function"}
+                    </span>
+                    <h2>{t.name}</h2>
+                    <p>{t.description}</p>
+                    <div className="row">
+                      <button className="ghost" onClick={() => setToolEdit(t)}>
+                        Edit tool
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          void api(`/tools/${t.id}`, "DELETE")
+                            .then(() =>
+                              setTools((ts) => ts.filter((v) => v.id !== t.id)),
+                            )
+                            .catch((e) => setError(e.message))
+                        }
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </section>
-                )}
-              </div>
-            ))}
-          {section === "Phone numbers" && (
+                ))
+              ) : (
+                <section className="empty">
+                  <h2>Give your assistants the tools to act.</h2>
+                  <p>
+                    Create transfers, navigate IVRs, or connect your own
+                    functions.
+                  </p>
+                  <button onClick={() => setToolEdit("new")}>
+                    Create your first tool
+                  </button>
+                </section>
+              )}
+            </div>
+          ))}
+        {section === "Phone numbers" && (
+          <div className="fields">
+            {loaded && (
+              <TwilioConnection
+                key={twilio?.accountSid ?? "new"}
+                connection={twilio}
+                onConnected={connected}
+              />
+            )}
             <section>
               <div className="section-head">
                 <h2>Your Twilio numbers</h2>
-                <button className="ghost" onClick={() => void loadNumbers()}>
-                  Refresh numbers
+                <button
+                  className="ghost"
+                  disabled={!twilio?.configured || loadingNumbers}
+                  onClick={() => void loadNumbers()}
+                >
+                  {loadingNumbers ? "Loading numbers…" : "Refresh numbers"}
                 </button>
               </div>
               <p className="hint">
@@ -327,7 +329,11 @@ export default function Page() {
               </p>
               {!numbers.length ? (
                 <div className="empty">
-                  Connect your Twilio account, then refresh to load numbers.
+                  {loadingNumbers
+                    ? "Loading your Twilio phone numbers…"
+                    : twilio?.configured
+                      ? "No phone numbers found. Add a number in your Twilio Console, then refresh."
+                      : "Connect your Twilio account above to load its phone numbers."}
                 </div>
               ) : (
                 numbers.map((n) => (
@@ -359,17 +365,54 @@ export default function Page() {
                         ))}
                       </select>
                     </label>
+                    {n.agentId && (
+                      <Button
+                        variant="outline"
+                        disabled={saving}
+                        onClick={() => {
+                          setSaving(true);
+                          setError("");
+                          void api(`/numbers/${n.sid}/assign`, "POST", {
+                            agentId: n.agentId,
+                          })
+                            .then(() =>
+                              setNotice(
+                                "Inbound route updated to the current public URL.",
+                              ),
+                            )
+                            .catch((e) => setError(e.message))
+                            .finally(() => setSaving(false));
+                        }}
+                      >
+                        Refresh inbound route
+                      </Button>
+                    )}
+                    <button
+                      className="ghost"
+                      onClick={() => {
+                        setPreferredFrom(n.phoneNumber);
+                        setSection("Calls");
+                        setError("");
+                        setNotice("");
+                      }}
+                    >
+                      Make a call
+                    </button>
                   </div>
                 ))
               )}
             </section>
-          )}
-          {section === "Calls" && (
-            <CallsPanel agents={agents} numbers={numbers} onError={onError} />
-          )}
-        </main>
-        <footer>AI Twin · Voice calling workspace</footer>
-      </div>
+          </div>
+        )}
+        {section === "Calls" && (
+          <CallsPanel
+            agents={agents}
+            numbers={numbers}
+            onError={onError}
+            initialFrom={preferredFrom}
+          />
+        )}
+      </main>
     </div>
   );
 }

@@ -12,11 +12,20 @@ export const encodeMulaw = (sample: number): number => {
     exponent--;
   return ~(sign | (exponent << 4) | ((value >> (exponent + 3)) & 15)) & 255;
 };
-export const audioRms = (audio: Buffer): number =>
-  Math.sqrt(
-    audio.reduce((n, v) => n + decodeMulaw(v) ** 2, 0) /
-      Math.max(1, audio.length),
-  );
+export const audioRms = (
+  audio: Buffer,
+  encoding: "mulaw" | "pcm_s16le" = "mulaw",
+): number => {
+  let sum = 0;
+  const count =
+    encoding === "mulaw" ? audio.length : Math.floor(audio.length / 2);
+  for (let i = 0; i < count; i++)
+    sum +=
+      (encoding === "mulaw"
+        ? decodeMulaw(audio[i])
+        : audio.readInt16LE(i * 2)) ** 2;
+  return Math.sqrt(sum / Math.max(1, count));
+};
 const rows = [697, 770, 852, 941],
   columns = [1209, 1336, 1477, 1633],
   keys = ["123A", "456B", "789C", "*0#D"];
