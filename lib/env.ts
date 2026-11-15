@@ -34,6 +34,28 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(8080),
   ADMIN_PORT: z.coerce.number().int().positive().default(8081),
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),
+  MONGODB_URI: z.string().default("mongodb://127.0.0.1:27017"),
+  MONGODB_DATABASE: z.string().default("ai_twin"),
+  REDIS_PREFIX: z
+    .string()
+    .regex(/^[a-zA-Z0-9_-]+$/)
+    .default("ai-twin"),
+  REDIS_URL: z.string().default("redis://127.0.0.1:6379"),
+  S3_ENDPOINT: z.string().url().default("http://127.0.0.1:9000"),
+  S3_REGION: z.string().default("auto"),
+  S3_BUCKET: z.string().default("call-artifacts"),
+  S3_ACCESS_KEY_ID: z.string().default(""),
+  S3_SECRET_ACCESS_KEY: z.string().default(""),
+  S3_FORCE_PATH_STYLE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  CREDENTIAL_ENCRYPTION_KEY: z.string().default(""),
+  RECORDING_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  CALLS_PER_MINUTE: z.coerce.number().int().positive().default(60),
   DATA_DIR: z.string().default(".data"),
   FUNCTION_ALLOWED_HOSTS: z.string().default(""),
   LIVEAVATAR_API_KEY: z.string().default(""),

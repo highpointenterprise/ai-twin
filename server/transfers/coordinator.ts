@@ -57,6 +57,8 @@ export class WarmTransferCoordinator {
   private readonly recoveries = new Map<string, Promise<void>>();
   private readonly verifications = new Set<string>();
   private closed = false;
+  private readonly pendingRecords: WarmTransferRecord[] = [];
+  private persisting?: Promise<void>;
   constructor(
     private readonly deps: {
       telephony: WarmTransferTelephony;
@@ -65,11 +67,26 @@ export class WarmTransferCoordinator {
       traces: TraceStore;
       path?: string;
       now?: () => number;
+      records?: WarmTransferRecord[];
+      persistence?: { save(record: WarmTransferRecord): Promise<void> };
+      onCallEnded?: (sid: string) => Promise<void>;
     },
   ) {
     this.file = new JsonFile(deps.path);
-    for (const record of this.file.load([]))
+    for (const record of deps.records ?? this.file.load([]))
       this.records.set(record.id, record);
+  }
+  flush(): Promise<void> {
+    if (this.persisting) return this.persisting;
+    const task = (async () => {
+      while (this.pendingRecords.length) {
+        await this.deps.persistence!.save(this.pendingRecords[0]);
+        this.pendingRecords.shift();
+      }
+    })();
+    this.persisting = task;
+    void task.finally(() => { if (this.persisting === task) this.persisting = undefined; }).catch(() => {});
+    return task;
   }
   private now(): number {
     return this.deps.now?.() ?? Date.now();
@@ -167,12 +184,14 @@ export class WarmTransferCoordinator {
     return id;
   }
   private async launch(r: WarmTransferRecord): Promise<void> {
+    await this.flush();
     await this.deps.telephony.redirectCall(
       r.callerSid,
       transferUrl(r.id, "hold"),
     );
     if (r.phase !== "preparing") return;
     this.phase(r, "dialing");
+    await this.flush();
     const sid = await this.deps.telephony.dialOperator({
       to: r.destination.number,
       from: r.from,
@@ -215,14 +234,14 @@ export class WarmTransferCoordinator {
       this.deps.registry.patch(r.callerSid, { operatorCallSid: sid });
     this.save(r);
   }
-  operatorAnswered(id: string, sid: string, to: string): string | undefined {
+  async operatorAnswered(id: string, sid: string, to: string): Promise<string | undefined> {
     const r = this.get(id);
     if (to !== r.destination.number)
       throw new HttpError(403, "Recipient number mismatch.");
     this.bindOperator(r, sid);
     if (!["dialing", "consulting"].includes(r.phase)) return undefined;
     if (r.consultationContextId)
-      return this.deps.contexts.get(r.consultationContextId)
+      return (await this.deps.contexts.getAsync(r.consultationContextId))
         ? r.consultationContextId
         : undefined;
     r.consultationContextId = randomUUID();
@@ -230,7 +249,7 @@ export class WarmTransferCoordinator {
       r.snapshot.deadline,
       this.now() + r.plan.maxDurationSeconds * 1000,
     );
-    this.deps.contexts.set(r.consultationContextId, {
+    await this.deps.contexts.setAsync(r.consultationContextId, {
       agent: r.snapshot.agent,
       tools: [],
       brief: "",
@@ -243,6 +262,7 @@ export class WarmTransferCoordinator {
     this.deps.registry.update(sid, "connected");
     this.phase(r, "consulting");
     this.arm(r);
+    await this.flush();
     return r.consultationContextId;
   }
   async accept(id: string, operatorSid: string): Promise<void> {
@@ -260,12 +280,14 @@ export class WarmTransferCoordinator {
     this.save(r);
     this.arm(r);
     try {
+      await this.flush();
       const conference = await this.deps.telephony.conferenceMembers(r.room);
       if (this.get(id).phase !== "connecting") return;
       if (!conference?.callSids.includes(r.callerSid))
         throw new Error("Caller is not present in the waiting conference.");
       r.conferenceSid = conference.sid;
       this.save(r);
+      await this.flush();
       await this.deps.telephony.redirectCall(
         operatorSid,
         transferUrl(id, "bridge"),
@@ -282,6 +304,7 @@ export class WarmTransferCoordinator {
     if (r.phase !== "connecting" || this.verifications.has(id)) return;
     this.verifications.add(id);
     try {
+      await this.flush();
       const conference = await this.deps.telephony.conferenceMembers(r.room);
       if (this.get(id).phase !== "connecting") return;
       if (
@@ -299,7 +322,7 @@ export class WarmTransferCoordinator {
       this.verifications.delete(id);
     }
   }
-  operatorStatus(id: string, sid: string, to: string, status: string): void {
+  async operatorStatus(id: string, sid: string, to: string, status: string): Promise<void> {
     const r = this.get(id);
     if (to !== r.destination.number)
       throw new HttpError(403, "Recipient number mismatch.");
@@ -332,6 +355,7 @@ export class WarmTransferCoordinator {
         void this.stopOperator(r).catch((e) => this.error(r, e));
       return;
     }
+    await this.deps.onCallEnded?.(sid);
     if (r.phase === "connected") {
       this.phase(r, "completed", `operator-${status}`);
       this.clearTimer(id);
@@ -383,7 +407,7 @@ export class WarmTransferCoordinator {
     const connected = r.phase === "connected";
     this.phase(r, connected ? "completed" : "cancelled", "caller-ended");
     this.clearTimer(r.id);
-    this.removeContexts(r);
+    await this.removeContexts(r);
     try {
       await this.stopOperator(r);
     } catch (error) {
@@ -414,6 +438,7 @@ export class WarmTransferCoordinator {
     r.recoveryAttempts++;
     this.save(r);
     try {
+      await this.flush();
       const callerStatus = await this.deps.telephony.callStatus(r.callerSid);
       if (r.phase !== "returning") return;
       if (TERMINAL_CALL.has(callerStatus)) {
@@ -428,12 +453,12 @@ export class WarmTransferCoordinator {
       if (r.snapshot.deadline <= this.now()) {
         await this.deps.telephony.endCall(r.callerSid);
         this.phase(r, "cancelled", "max-duration");
-        this.removeContexts(r);
+        await this.removeContexts(r);
         return;
       }
-      if (!r.resumeContextId || !this.deps.contexts.get(r.resumeContextId)) {
+      if (!r.resumeContextId || !(await this.deps.contexts.getAsync(r.resumeContextId))) {
         r.resumeContextId = randomUUID();
-        this.deps.contexts.set(r.resumeContextId, {
+        await this.deps.contexts.setAsync(r.resumeContextId, {
           ...r.snapshot,
           agent: {
             ...r.snapshot.agent,
@@ -451,6 +476,7 @@ export class WarmTransferCoordinator {
         });
       }
       this.save(r);
+      await this.flush();
       await this.deps.telephony.redirectCall(
         r.callerSid,
         transferUrl(r.id, "resume"),
@@ -473,14 +499,15 @@ export class WarmTransferCoordinator {
       }
     }
   }
-  resumed(id: string, sid: string): void {
+  async resumed(id: string, sid: string): Promise<void> {
     const r = this.get(id);
     if (r.callerSid !== sid || r.phase !== "returning")
       throw new HttpError(409, "This caller is not awaiting recovery.");
     this.phase(r, "returned", r.reason);
     this.clearTimer(id);
     if (r.consultationContextId)
-      this.deps.contexts.delete(r.consultationContextId);
+      await this.deps.contexts.deleteAsync(r.consultationContextId);
+    await this.flush();
   }
   async retry(id: string): Promise<void> {
     const r = this.get(id);
@@ -562,6 +589,7 @@ export class WarmTransferCoordinator {
   private async stopOperator(r: WarmTransferRecord): Promise<void> {
     if (!r.operatorSid) return;
     try {
+      await this.flush();
       await this.deps.telephony.endCall(r.operatorSid);
     } catch (error) {
       if (
@@ -570,11 +598,12 @@ export class WarmTransferCoordinator {
         throw error;
     }
     this.deps.registry.update(r.operatorSid, "completed");
+    await this.deps.onCallEnded?.(r.operatorSid);
   }
-  private removeContexts(r: WarmTransferRecord): void {
+  private async removeContexts(r: WarmTransferRecord): Promise<void> {
     if (r.consultationContextId)
-      this.deps.contexts.delete(r.consultationContextId);
-    if (r.resumeContextId) this.deps.contexts.delete(r.resumeContextId);
+      await this.deps.contexts.deleteAsync(r.consultationContextId);
+    if (r.resumeContextId) await this.deps.contexts.deleteAsync(r.resumeContextId);
   }
   private async failOperation(
     r: WarmTransferRecord,
@@ -612,7 +641,12 @@ export class WarmTransferCoordinator {
       .filter((v) => TERMINAL.has(v.phase))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     for (const old of terminal.slice(200)) this.records.delete(old.id);
-    this.file.save([...this.records.values()]);
+    if (this.deps.persistence) {
+      if (this.pendingRecords.length >= 10_000) throw new Error("Transfer storage backlog is full.");
+      this.pendingRecords.push(structuredClone(r));
+      // Retain failed snapshots in order; flush retries before later transitions.
+      void this.flush().catch(() => {});
+    } else this.file.save([...this.records.values()]);
     if (this.deps.registry.get(r.callerSid)?.transferId === r.id)
       this.deps.registry.patch(r.callerSid, {
         transferStatus: `warm-${r.phase}`,

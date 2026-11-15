@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type {
   AgentConfig,
   CallRecord,
+  CallCost,
   CallTraceView,
   PhoneNumberView,
 } from "../../lib/types";
@@ -29,6 +30,9 @@ export function CallsPanel({
 }) {
   const [calls, setCalls] = useState<CallRecord[]>([]),
     [selected, setSelected] = useState("");
+  const [cursor, setCursor] = useState("");
+  const [previousPages, setPreviousPages] = useState<string[]>([]);
+  const [nextCursor, setNextCursor] = useState("");
   const [transfer, setTransfer] = useState<TransferView | null>(null);
   const [trace, setTrace] = useState<CallTraceView | null>(null);
   const [agentId, setAgent] = useState(agents[0]?.id ?? ""),
@@ -36,12 +40,55 @@ export function CallsPanel({
     [from, setFrom] = useState(initialFrom),
     [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
+  const [artifactMessage, setArtifactMessage] = useState("");
+  const downloadArtifact = async (
+    sid: string,
+    kind: "transcript" | "logs" | "recording",
+  ) => {
+    setArtifactMessage("");
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
+    try {
+      const response = await fetch(
+        `/api/calls/${encodeURIComponent(sid)}/artifacts/${kind}`,
+      );
+      if (response.status === 404) {
+        tab?.close();
+        setArtifactMessage(
+          `${kind === "recording" ? "Recording" : kind === "logs" ? "Logs" : "Transcript"} is still processing or unavailable for this call.`,
+        );
+        return;
+      }
+      if (!response.ok) throw new Error("Cannot download this call artifact.");
+      const { url } = (await response.json()) as { url: string };
+      const target = new URL(url);
+      if (!["https:", "http:"].includes(target.protocol))
+        throw new Error("Invalid download URL.");
+      if (tab) tab.location.href = target.href;
+      else
+        setArtifactMessage(
+          "Allow pop-ups for this site, then try the download again.",
+        );
+    } catch (error) {
+      tab?.close();
+      setArtifactMessage(
+        error instanceof Error ? error.message : "Download failed.",
+      );
+    }
+  };
   useEffect(() => {
     let disposed = false;
     const load = async () => {
       try {
-        const c = await api<CallRecord[]>("/calls");
-        if (!disposed) setCalls(c);
+        const response = await fetch(
+          `/api/calls?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        );
+        if (!response.ok) throw new Error("Cannot load call history.");
+        const c = (await response.json()) as CallRecord[];
+        if (!disposed) {
+          setCalls(c);
+          setNextCursor(response.headers.get("X-Next-Cursor") ?? "");
+        }
         if (selected) {
           const t = await api<CallTraceView>(`/calls/${selected}/trace`).catch(
             () => null,
@@ -65,7 +112,7 @@ export function CallsPanel({
       disposed = true;
       clearInterval(timer);
     };
-  }, [selected, onError]);
+  }, [selected, onError, cursor]);
   const start = async () => {
     setBusy(true);
     try {
@@ -77,6 +124,8 @@ export function CallsPanel({
       });
       setTrace(null);
       setTransfer(null);
+      setCursor("");
+      setPreviousPages([]);
       setSelected(call.sid);
       setCalls((c) => [call, ...c]);
     } catch (e) {
@@ -93,7 +142,7 @@ export function CallsPanel({
           <p className="eyebrow">TWILIO TELEPHONY</p>
           <h2>Calls</h2>
         </div>
-        <span className="badge">{calls.length} recent</span>
+        <span className="badge">{calls.length} on this page</span>
       </div>
       <section>
         <h3>New outbound call</h3>
@@ -192,13 +241,53 @@ export function CallsPanel({
                     <td>{c.direction === "outbound" ? c.to : c.from}</td>
                     <td>{c.status}</td>
                     <td>{c.endedReason ?? c.answeredBy ?? "—"}</td>
-                    <td>{c.cost ? `$${c.cost.totalUsd.toFixed(3)}` : "—"}</td>
+                    <td>
+                      {c.cost ? (
+                        <>
+                          <span>${c.cost.totalUsd.toFixed(4)}</span>
+                          <br />
+                          <small>
+                            {c.cost.status === "incomplete"
+                              ? "Known subtotal"
+                              : c.cost.estimated
+                                ? "Estimated"
+                                : "Final"}
+                          </small>
+                        </>
+                      ) : (
+                        "Pending"
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        <div className="section-head">
+          <button
+            type="button"
+            disabled={!previousPages.length}
+            onClick={() => {
+              setCursor(previousPages.at(-1) ?? "");
+              setPreviousPages((p) => p.slice(0, -1));
+              setSelected("");
+            }}
+          >
+            Newer calls
+          </button>
+          <button
+            type="button"
+            disabled={!nextCursor}
+            onClick={() => {
+              setPreviousPages((p) => [...p, cursor]);
+              setCursor(nextCursor);
+              setSelected("");
+            }}
+          >
+            Older calls
+          </button>
+        </div>
       </section>
       {active && (
         <section>
@@ -218,6 +307,31 @@ export function CallsPanel({
             )}
           </div>
           <p className="mono subtle">{active.sid}</p>
+          <div className="row">
+            <button
+              className="ghost"
+              onClick={() => void downloadArtifact(active.sid, "transcript")}
+            >
+              Download transcript
+            </button>
+            <button
+              className="ghost"
+              onClick={() => void downloadArtifact(active.sid, "logs")}
+            >
+              Download logs
+            </button>
+            <button
+              className="ghost"
+              onClick={() => void downloadArtifact(active.sid, "recording")}
+            >
+              Download recording
+            </button>
+          </div>
+          {artifactMessage && (
+            <p className="hint" role="status">
+              {artifactMessage}
+            </p>
+          )}
           <p className="hint">
             For webhook, provider and audio delivery details, open Diagnostics
             and filter by this Call SID.
@@ -285,6 +399,13 @@ export function CallsPanel({
               )}
             </fieldset>
           )}
+          {active.cost ? (
+            <CallCostDetails cost={active.cost} />
+          ) : (
+            <p className="hint">
+              Usage and costs will appear after call processing completes.
+            </p>
+          )}
           {trace ? (
             <>
               <ol className="transcript">
@@ -311,11 +432,187 @@ export function CallsPanel({
             </>
           ) : (
             <p className="hint">
-              No trace is available in this server session.
+              No transcript or events are available for this call yet.
             </p>
           )}
         </section>
       )}
     </div>
+  );
+}
+
+function CallCostDetails({ cost }: { cost: CallCost }) {
+  const money = (value: number | null | undefined) =>
+    value === null || value === undefined ? "Unpriced" : `$${value.toFixed(6)}`;
+  return (
+    <fieldset>
+      <legend>Usage & costs</legend>
+      <p>
+        <strong>
+          {cost.status === "incomplete" ? "Known subtotal" : "Total"}:{" "}
+          {money(cost.totalUsd)} USD
+        </strong>
+        {" · "}
+        {cost.status ?? (cost.estimated ? "estimated" : "final")}
+      </p>
+      {cost.reconciliationStatus === "pending" && (
+        <p className="hint">
+          Provider charges are still being reconciled. Values may update.
+        </p>
+      )}
+      {cost.costBreakdown && (
+        <p className="hint">
+          Model {money(cost.costBreakdown.llm)} · Transcriber{" "}
+          {money(cost.costBreakdown.stt)} · Voice{" "}
+          {money(cost.costBreakdown.tts)} · Telephony{" "}
+          {money(cost.costBreakdown.transport)} · Hosting{" "}
+          {money(cost.costBreakdown.hosting)}
+        </p>
+      )}
+      <div className="table-scroll">
+        <table aria-label="Call cost breakdown">
+          <thead>
+            <tr>
+              <th>Provider / service</th>
+              <th>Usage</th>
+              <th>Rate</th>
+              <th>Cost (USD)</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cost.lines.map((line, index) => (
+              <tr key={index}>
+                <td>
+                  {line.provider}
+                  <br />
+                  <small>{line.item}</small>
+                </td>
+                <td>
+                  {line.unit === "unknown"
+                    ? "Pending"
+                    : `${line.quantity.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${line.unit}`}
+                </td>
+                <td>
+                  {line.rate === null
+                    ? "—"
+                    : `${money(line.rate)} / ${line.unit}`}
+                </td>
+                <td>{money(line.usd)}</td>
+                <td>
+                  {line.source === "provider"
+                    ? "Provider reported"
+                    : line.usd === null
+                      ? "Missing rate"
+                      : "Estimated"}
+                  {line.note && (
+                    <details>
+                      <summary>Details</summary>
+                      <small>{line.note}</small>
+                    </details>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!!cost.usage?.llm.length && (
+        <>
+          <h4>Model tokens</h4>
+          <div className="table-scroll">
+            <table aria-label="Model token usage">
+              <thead>
+                <tr>
+                  <th>Provider / model</th>
+                  <th>Requests</th>
+                  <th>Input</th>
+                  <th>Cached input</th>
+                  <th>Output</th>
+                  <th>Reasoning</th>
+                  <th>Audio input / output</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cost.usage.llm.map((usage) => (
+                  <tr key={`${usage.provider}:${usage.model}`}>
+                    <td>
+                      {usage.provider}
+                      <br />
+                      <small>{usage.model}</small>
+                    </td>
+                    <td>
+                      {usage.requests}
+                      {usage.estimatedRequests > 0 && (
+                        <small> ({usage.estimatedRequests} estimated)</small>
+                      )}
+                    </td>
+                    <td>{usage.prompt.toLocaleString()}</td>
+                    <td>{usage.cached.toLocaleString()}</td>
+                    <td>{usage.completion.toLocaleString()}</td>
+                    <td>{usage.reasoning.toLocaleString()}</td>
+                    <td>
+                      {usage.inputAudio.toLocaleString()} /{" "}
+                      {usage.outputAudio.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint">
+            Cached and audio input are included in input tokens. Reasoning and
+            audio output are included in output tokens.
+          </p>
+        </>
+      )}
+      {cost.usage && (
+        <p className="hint">
+          Transcribed audio:{" "}
+          {cost.usage.transcriber
+            .reduce((sum, item) => sum + item.audioSeconds, 0)
+            .toFixed(2)}{" "}
+          seconds · Generated voice:{" "}
+          {cost.usage.voice
+            .reduce((sum, item) => sum + item.characters, 0)
+            .toLocaleString()}{" "}
+          characters · Call duration: {cost.durationSec.toFixed(1)} seconds
+        </p>
+      )}
+      {!!cost.relatedCalls?.length && (
+        <details>
+          <summary>
+            {cost.relatedCalls.some(
+              (call) =>
+                call.totalUsd === null ||
+                call.status === "incomplete" ||
+                call.status === "pending",
+            )
+              ? "Known subtotal including transfer calls"
+              : "Including transfer calls"}
+            : {money(cost.totalWithRelatedUsd)}
+          </summary>
+          <p className="hint">
+            Each transfer call has its own bill. This combined figure includes
+            those bills once.
+          </p>
+          <ul>
+            {cost.relatedCalls.map((call) => (
+              <li key={call.callId}>
+                <span className="mono">{call.callId}</span>:{" "}
+                {money(call.totalUsd)} ({call.status})
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {cost.warnings.length > 0 && (
+        <ul className="hint">
+          {cost.warnings.map((warning, index) => (
+            <li key={index}>{warning}</li>
+          ))}
+        </ul>
+      )}
+    </fieldset>
   );
 }

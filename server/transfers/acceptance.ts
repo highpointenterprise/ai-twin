@@ -1,12 +1,12 @@
 import { z } from "zod";
-import type { AgentConfig } from "../../lib/types";
-import type { ChatMessage, LanguageModel } from "../core/ports";
+import type { AgentConfig, TraceEvent } from "../../lib/types";
+import type { ChatMessage, LanguageModel, ProviderTrace } from "../core/ports";
 
 const decisionSchema = z
   .object({ decision: z.enum(["accept", "decline", "unclear", "automated"]) })
   .strict();
 
-type Log = (event: string, data: Record<string, unknown>) => void;
+type Log = (event: string, data: TraceEvent["detail"]) => void;
 
 function parseDecision(raw: string): string | undefined {
   const json = raw.match(/\{[\s\S]*\}/)?.[0];
@@ -35,6 +35,7 @@ export async function verifyRecipientAcceptance(
   history: ChatMessage[],
   signal: AbortSignal,
   log?: Log,
+  trace?: ProviderTrace,
 ): Promise<boolean> {
   const conversation = history
     .filter(
@@ -49,6 +50,7 @@ export async function verifyRecipientAcceptance(
   for await (const delta of model.stream(
     {
       model: agent.model,
+      trace,
       temperature: 0,
       tools: [],
       messages: [

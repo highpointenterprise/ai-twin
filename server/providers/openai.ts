@@ -35,13 +35,15 @@ const convert = (messages: ChatMessage[]): ChatCompletionMessageParam[] =>
       };
     return { role: m.role, content: m.content };
   });
-export const createOpenAiModel = (): LanguageModel => {
+export const createOpenAiModel = (
+  makeClient: (options: ConstructorParameters<typeof OpenAI>[0]) => OpenAI = (options) => new OpenAI(options),
+): LanguageModel => {
   const clients = new Map<string, OpenAI>();
   const client = (route: ModelRoute): OpenAI => {
     const key = `${route.provider}`;
     const existing = clients.get(key);
     if (existing) return existing;
-    const created = new OpenAI({
+    const created = makeClient({
       apiKey: route.endpoint.apiKey(),
       baseURL: route.endpoint.baseURL,
       httpAgent: providerAgent(),
@@ -79,7 +81,17 @@ export const createOpenAiModel = (): LanguageModel => {
         outChars = 0;
       try {
         for await (const chunk of stream) {
-          if (chunk.usage) {
+          if (chunk.usage && !reported) {
+            reported = true;
+            trace?.usage?.addLlm(model, {
+              provider: route.provider, requestId: chunk.id,
+              promptTokens: chunk.usage.prompt_tokens,
+              cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+              completionTokens: chunk.usage.completion_tokens,
+              reasoningTokens: chunk.usage.completion_tokens_details?.reasoning_tokens ?? 0,
+              inputAudioTokens: chunk.usage.prompt_tokens_details?.audio_tokens ?? 0,
+              outputAudioTokens: chunk.usage.completion_tokens_details?.audio_tokens ?? 0,
+            });
             trace?.log("openai.usage", {
               model,
               input_tokens: chunk.usage.prompt_tokens,
@@ -118,17 +130,38 @@ export const createOpenAiModel = (): LanguageModel => {
           yield { type: "tool-call", call };
         }
       } finally {
-        
+        if (!reported) {
+          // Interrupted streams often omit the final usage frame. Preserve that
+          // spend separately as an explicit estimate, including tool schemas.
+          trace?.usage?.addLlm(model, {
+            provider: route.provider,
+            promptTokens: Math.ceil(JSON.stringify({ messages, tools }).length / 4),
+            cachedTokens: 0,
+            completionTokens: Math.ceil(outChars / 4),
+            estimated: true,
+          });
+        }
       }
     },
-    complete: async ({ messages, model: spec, temperature }) => {
+    complete: async ({ messages, model: spec, temperature, trace }) => {
       const route = resolveModel(spec);
       const r = await client(route).chat.completions.create({
         model: route.model,
         messages: convert(messages),
         ...sampling(route, temperature, 500),
       });
-      return r.choices[0]?.message.content?.trim() ?? "";
+      const text = r.choices[0]?.message.content?.trim() ?? "";
+      trace?.usage?.addLlm(spec, {
+        provider: route.provider, requestId: r.id,
+        promptTokens: r.usage?.prompt_tokens ?? Math.ceil(JSON.stringify(messages).length / 4),
+        cachedTokens: r.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        completionTokens: r.usage?.completion_tokens ?? Math.ceil(text.length / 4),
+        reasoningTokens: r.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+        inputAudioTokens: r.usage?.prompt_tokens_details?.audio_tokens ?? 0,
+        outputAudioTokens: r.usage?.completion_tokens_details?.audio_tokens ?? 0,
+        estimated: !r.usage,
+      });
+      return text;
     },
   };
 };

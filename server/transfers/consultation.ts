@@ -136,7 +136,7 @@ export function createConsultationSession(
           last.startsWith("[Caller pressed")
         ) {
           init.trace.log("warm.quote_mismatch", {
-            last,
+            last: last ?? "",
             quote: args.acceptanceQuote,
           });
           throw new Error(
@@ -150,6 +150,7 @@ export function createConsultationSession(
             ctx.snapshot?.history ?? [],
             ctx.signal,
             (event, data) => init.trace.log(event, data),
+            init.trace,
           ))
         )
           throw new Error(

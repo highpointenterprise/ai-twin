@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import { z } from "zod";
 import { env } from "../../lib/env";
 import { parseJson } from "../../lib/json";
-import type { RealtimeFactory } from "../core/ports";
+import type { ProviderTrace, RealtimeFactory } from "../core/ports";
 
 const eventSchema = z.object({
   type: z.string(),
@@ -10,6 +10,8 @@ const eventSchema = z.object({
   item_id: z.string().optional(),
   transcript: z.string().optional(),
   error: z.object({ message: z.string().optional() }).optional(),
+  response: z.object({ id: z.string().optional(), usage: z.unknown().optional() }).optional(),
+  usage: z.unknown().optional(),
 });
 
 export const createOpenAiRealtime: RealtimeFactory = (config, events) => {
@@ -26,7 +28,7 @@ export const createOpenAiRealtime: RealtimeFactory = (config, events) => {
   socket.on("message", (raw) => {
     const parsed = eventSchema.safeParse(parseJson(raw.toString()));
     if (!parsed.success) return;
-    const { type, delta, item_id: itemId, transcript, error } = parsed.data;
+    const { type, delta, item_id: itemId, transcript, error, response, usage } = parsed.data;
     switch (type) {
       case "session.created":
         send({
@@ -64,6 +66,7 @@ export const createOpenAiRealtime: RealtimeFactory = (config, events) => {
         events.onUserSpeechStop();
         break;
       case "conversation.item.input_audio_transcription.completed":
+        recordRealtimeUsage(config.trace, "gpt-4o-mini-transcribe", usage, itemId);
         if (transcript?.trim()) events.onUserTranscript(transcript.trim());
         break;
       case "response.output_audio_transcript.done":
@@ -71,6 +74,7 @@ export const createOpenAiRealtime: RealtimeFactory = (config, events) => {
         if (transcript?.trim()) events.onAgentTranscript(transcript.trim());
         break;
       case "response.done":
+        recordRealtimeUsage(config.trace, config.model, response?.usage, response?.id);
         events.onResponseDone();
         break;
       case "error":
@@ -89,3 +93,34 @@ export const createOpenAiRealtime: RealtimeFactory = (config, events) => {
     close: () => socket.close(),
   };
 };
+
+
+const usageSchema = z.object({
+  input_tokens: z.number().nonnegative(),
+  output_tokens: z.number().nonnegative(),
+  input_token_details: z.object({
+    audio_tokens: z.number().nonnegative().optional(),
+    cached_tokens: z.number().nonnegative().optional(),
+    cached_tokens_details: z.object({ audio_tokens: z.number().nonnegative().optional() }).optional(),
+  }).optional(),
+  output_token_details: z.object({ audio_tokens: z.number().nonnegative().optional() }).optional(),
+});
+/** Realtime tokens have independent audio and text prices. */
+export function recordRealtimeUsage(trace: ProviderTrace | undefined, model: string, raw: unknown, requestId?: string): void {
+  const parsed = usageSchema.safeParse(raw);
+  if (!parsed.success) {
+    trace?.usage?.markMissing("openai", model, "Provider did not return valid realtime token usage.");
+    trace?.log("realtime.usage_missing", { model });
+    return;
+  }
+  const usage = parsed.data;
+  trace?.usage?.addLlm(model, {
+    provider: "openai", requestId,
+    promptTokens: usage.input_tokens,
+    cachedTokens: usage.input_token_details?.cached_tokens ?? 0,
+    completionTokens: usage.output_tokens,
+    inputAudioTokens: usage.input_token_details?.audio_tokens ?? 0,
+    cachedAudioTokens: usage.input_token_details?.cached_tokens_details?.audio_tokens ?? 0,
+    outputAudioTokens: usage.output_token_details?.audio_tokens ?? 0,
+  });
+}

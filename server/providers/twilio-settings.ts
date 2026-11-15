@@ -48,12 +48,20 @@ export class TwilioSettings {
   private saved?: TwilioCredentials;
   private updating = false;
   constructor(
-    private readonly store: TwilioCredentialStore,
+    private readonly store: Pick<TwilioCredentialStore, "load"> & {
+      save(credentials: TwilioCredentials): void | Promise<void>;
+      refresh?(): Promise<void>;
+    },
     private readonly verify: (
       credentials: TwilioCredentials,
     ) => Promise<TelephonyNumber[]>,
   ) {
     this.saved = store.load();
+  }
+  async refresh(): Promise<void> {
+    if (this.updating || !this.store.refresh) return;
+    await this.store.refresh();
+    if (!this.updating) this.saved = this.store.load();
   }
   current = (): TwilioCredentials => ({
     ...(this.saved ?? environmentTwilioCredentials()),
@@ -96,11 +104,11 @@ export class TwilioSettings {
           "A call or number update started. Finish it before changing Twilio credentials.",
         );
       try {
-        this.store.save(credentials);
+        await this.store.save(credentials);
       } catch {
         throw new HttpError(
           500,
-          "Could not save Twilio credentials. Check the backend data directory permissions.",
+          "Could not save Twilio credentials. Check the configured credential storage and encryption key.",
         );
       }
       this.saved = credentials;

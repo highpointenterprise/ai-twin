@@ -1,3 +1,6 @@
+import type { MongoCallRepository } from "../storage/calls";
+import type { ObjectStore } from "../storage/objects";
+import type { RedisCallState } from "../storage/redis";
 import { warmTransferRoutes } from "../transfers/routes";
 import { meetingRoutes } from "../meetings/routes";
 import type { MeetingService } from "../meetings/service";
@@ -29,10 +32,10 @@ import type { TraceStore } from "../observability/trace";
 import { logEvent } from "../observability/trace";
 import { diagnosticEvents, errorDetail } from "../observability/diagnostics";
 import { effectiveAssistant } from "../engine/settings";
-import type { AgentStore } from "../store/agents";
+import type { AgentRepository } from "../store/agents";
 import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
-import type { ToolRegistry } from "../tools/registry";
+import type { ToolRepository } from "../tools/registry";
 import { voicemailAction } from "../calls/voicemail";
 import {
   environmentTwilioCredentials,
@@ -40,20 +43,31 @@ import {
   type TwilioSettings,
 } from "../providers/twilio-settings";
 export interface HttpDeps {
-  store: AgentStore;
+  store: AgentRepository;
   registry: CallRegistry;
   telephony: Telephony;
   pool: SessionPool;
   traces: TraceStore;
   contexts: ContextStore;
-  tools: ToolRegistry;
+  tools: ToolRepository;
   listVoices: () => Promise<VoiceOption[]>;
   pendingCalls: number;
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
   meetings?: MeetingService;
   costs?: CostTracker;
+  finalizeCall?: (sid: string) => Promise<void>;
+  retryStorage?: (sid: string) => Promise<void>;
+  calls?: MongoCallRepository;
+  objects?: ObjectStore;
+  callState?: RedisCallState;
+  recordingReady?: (sid: string, recordingSid: string) => Promise<void>;
+  startRecording?: (sid: string) => Promise<void>;
 }
+const configPageSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+  after: z.string().uuid().optional(),
+});
 const statusMap: Record<string, CallStatus> = {
   queued: "initiating",
   initiated: "initiating",
@@ -135,7 +149,8 @@ const onError = (
 };
 const capacity = (d: HttpDeps): boolean =>
   !!d.twilioSettings?.isUpdating ||
-  d.pendingCalls + d.registry.activeCount >= env.MAX_CONCURRENT_CALLS;
+  (!d.callState &&
+    d.pendingCalls + d.registry.activeCount >= env.MAX_CONCURRENT_CALLS);
 const missingConfiguration = (d: HttpDeps): string[] =>
   missingCallConfiguration(d.twilioSettings?.current());
 const requireTwilioStable = (d: HttpDeps): void => {
@@ -160,6 +175,9 @@ export const createAdminApp = (d: HttpDeps): Express => {
   const app = express();
   app.use(express.json({ limit: "128kb" }));
   app.use(requestLog(traces, "admin"));
+  app.use((req, res, next) => {
+    void Promise.resolve(d.twilioSettings?.refresh()).then(() => next(), next);
+  });
   // This API binds to loopback. Prevent a foreign website from mutating it through a browser.
   app.use((req, res, next) => {
     const origin = req.get("origin");
@@ -188,31 +206,36 @@ export const createAdminApp = (d: HttpDeps): Express => {
       },
     }),
   );
-  app.get("/api/diagnostics", (req, res) =>
-    res.set("Cache-Control", "no-store").json({
-      configuration: {
-        missing: missingConfiguration(d),
-        publicBaseUrl: env.PUBLIC_BASE_URL,
-        inboundUrl: `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
-        mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
-        assistants: store.list().map((a) => ({
-          id: a.id,
-          name: a.name,
-          voiceConfigured: !!effectiveAssistant(a).voiceId,
-          voiceSource: a.voiceId
-            ? "assistant"
-            : env.ELEVENLABS_VOICE_ID
-              ? "server default"
-              : "missing",
-          assignedNumber: store.numberForAgent(a.id) ?? null,
-          firstMessageMode: a.firstMessageMode,
-        })),
-      },
-      events: diagnosticEvents(
-        typeof req.query.callSid === "string" ? req.query.callSid : undefined,
-        500,
-      ),
-    }),
+  app.get(
+    "/api/diagnostics",
+    handle(async (req, res) =>
+      res.set("Cache-Control", "no-store").json({
+        configuration: {
+          missing: missingConfiguration(d),
+          publicBaseUrl: env.PUBLIC_BASE_URL,
+          inboundUrl: `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
+          mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
+          assistants: await Promise.all(
+            (await store.list()).map(async (a) => ({
+              id: a.id,
+              name: a.name,
+              voiceConfigured: !!effectiveAssistant(a).voiceId,
+              voiceSource: a.voiceId
+                ? "assistant"
+                : env.ELEVENLABS_VOICE_ID
+                  ? "server default"
+                  : "missing",
+              assignedNumber: (await store.numberForAgent(a.id)) ?? null,
+              firstMessageMode: a.firstMessageMode,
+            })),
+          ),
+        },
+        events: diagnosticEvents(
+          typeof req.query.callSid === "string" ? req.query.callSid : undefined,
+          500,
+        ),
+      }),
+    ),
   );
   app.put(
     "/api/integrations/twilio",
@@ -220,6 +243,11 @@ export const createAdminApp = (d: HttpDeps): Express => {
       res.set("Cache-Control", "no-store");
       if (!d.twilioSettings)
         throw new HttpError(503, "Twilio connection settings are unavailable.");
+      if (d.callState && (await d.callState.activeCount()) > 0)
+        throw new HttpError(
+          409,
+          "Finish active calls before changing credentials.",
+        );
       const numbers = await d.twilioSettings.connect(
         req.body,
         () =>
@@ -230,54 +258,76 @@ export const createAdminApp = (d: HttpDeps): Express => {
       );
       return res.json({
         connection: d.twilioSettings.status(),
-        numbers: numbers.map((n) => ({
-          ...n,
-          agentId: store.agentForNumber(n.phoneNumber)?.id ?? null,
-        })),
+        numbers: await Promise.all(
+          numbers.map(async (n) => ({
+            ...n,
+            agentId: (await store.agentForNumber(n.phoneNumber))?.id ?? null,
+          })),
+        ),
         missing: missingConfiguration(d),
       });
     }),
   );
-  app.get("/api/agents", (_req, res) => res.json(store.list()));
+  app.get(
+    "/api/agents",
+    handle(async (req, res) => {
+      const page = configPageSchema.parse(req.query);
+      const items = await store.list(page);
+      if (items.length === page.limit)
+        res.set("X-Next-Cursor", items[items.length - 1].id);
+      return res.json(items);
+    }),
+  );
   app.post(
     "/api/agents",
-    handle((req, res) => {
+    handle(async (req, res) => {
       const input = agentInputSchema.parse(req.body);
-      tools.resolve(input.toolIds);
-      return res.status(201).json(store.create(input));
+      await tools.resolve(input.toolIds);
+      return res.status(201).json(await store.create(input));
     }),
   );
   app.put(
     "/api/agents/:id",
-    handle((req, res) => {
+    handle(async (req, res) => {
       const input = agentInputSchema.parse(req.body);
-      tools.resolve(input.toolIds);
-      return res.json(store.update(req.params.id, input));
+      await tools.resolve(input.toolIds);
+      return res.json(await store.update(req.params.id, input));
     }),
   );
-  app.get("/api/tools", (_req, res) => res.json(tools.list()));
+  app.get(
+    "/api/tools",
+    handle(async (req, res) => {
+      const page = configPageSchema.parse(req.query);
+      const items = await tools.list(page);
+      if (items.length === page.limit)
+        res.set("X-Next-Cursor", items[items.length - 1].id);
+      return res.json(items);
+    }),
+  );
   app.post(
     "/api/tools",
-    handle((req, res) =>
-      res.status(201).json(tools.save(toolSchema.parse(req.body))),
+    handle(async (req, res) =>
+      res.status(201).json(await tools.save(toolSchema.parse(req.body))),
     ),
   );
   app.put(
     "/api/tools/:id",
-    handle((req, res) => {
-      tools.get(req.params.id);
-      return res.json(tools.save(toolSchema.parse(req.body), req.params.id));
+    handle(async (req, res) => {
+      await tools.get(req.params.id);
+      return res.json(
+        await tools.save(toolSchema.parse(req.body), req.params.id),
+      );
     }),
   );
   app.delete(
     "/api/tools/:id",
-    handle((req, res) => {
-      if (store.list().some((a) => a.toolIds.includes(req.params.id)))
+    handle(async (req, res) => {
+      if (await store.usesTool(req.params.id))
         throw new HttpError(
           409,
           "Detach this tool from assistants before deleting it.",
         );
-      tools.delete(req.params.id);
+      await tools.delete(req.params.id);
       return res.status(204).end();
     }),
   );
@@ -303,11 +353,11 @@ export const createAdminApp = (d: HttpDeps): Express => {
           503,
           "Connect your Twilio account to load phone numbers.",
         );
-      const list: PhoneNumberView[] = (await telephony.listNumbers()).map(
-        (n) => ({
+      const list: PhoneNumberView[] = await Promise.all(
+        (await telephony.listNumbers()).map(async (n) => ({
           ...n,
-          agentId: store.agentForNumber(n.phoneNumber)?.id ?? null,
-        }),
+          agentId: (await store.agentForNumber(n.phoneNumber))?.id ?? null,
+        })),
       );
       return res.json(list);
     }),
@@ -316,7 +366,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
     "/api/numbers/:sid/assign",
     handle(async (req, res) => {
       const agent = effectiveAssistant(
-        store.get(assignRequestSchema.parse(req.body).agentId),
+        await store.get(assignRequestSchema.parse(req.body).agentId),
       );
       requireReady(d, agent.voiceId);
       d.pendingCalls++;
@@ -330,7 +380,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
           `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
           `${env.PUBLIC_BASE_URL}/twilio/status`,
         );
-        store.assign(n.phoneNumber, agent.id);
+        await store.assign(n.phoneNumber, agent.id);
         logEvent("inbound.number_routed", {
           numberSid: n.sid,
           agentId: agent.id,
@@ -342,21 +392,52 @@ export const createAdminApp = (d: HttpDeps): Express => {
       }
     }),
   );
-  app.get("/api/calls", (_req, res) => res.json(registry.list()));
+  app.get(
+    "/api/calls",
+    handle(async (req, res) => {
+      if (!d.calls) return res.json(registry.list());
+      const query = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          cursor: z.string().optional(),
+          assistantId: z.string().optional(),
+        })
+        .parse(req.query);
+      const page = await d.calls.list(query);
+      if (page.nextCursor) res.set("X-Next-Cursor", page.nextCursor);
+      return res.json(page.items);
+    }),
+  );
   app.post(
     "/api/calls",
     handle(async (req, res) => {
       const input = callRequestSchema.parse(req.body),
-        agent = effectiveAssistant(store.get(input.agentId));
+        agent = effectiveAssistant(await store.get(input.agentId));
       requireReady(d, agent.voiceId);
       if (capacity(d))
         throw new HttpError(503, "Concurrent call limit reached.");
+      if (d.callState) {
+        const limit = await d.callState.rateLimit(
+          "outbound",
+          env.CALLS_PER_MINUTE,
+          60000,
+        );
+        if (!limit.allowed) {
+          res.set("Retry-After", String(Math.ceil(limit.retryAfterMs / 1000)));
+          throw new HttpError(429, "Call rate limit reached.");
+        }
+      }
       d.pendingCalls++;
       const callId = randomUUID();
       try {
+        if (
+          d.callState &&
+          !(await d.callState.reserve(callId, env.MAX_CONCURRENT_CALLS, 600000))
+        )
+          throw new HttpError(503, "Concurrent call limit reached.");
         const from =
           input.from ??
-          store.numberForAgent(agent.id) ??
+          (await store.numberForAgent(agent.id)) ??
           env.TWILIO_PHONE_NUMBER;
         if (!from)
           throw new HttpError(
@@ -370,9 +451,10 @@ export const createAdminApp = (d: HttpDeps): Express => {
             400,
             "Select a number owned by your connected Twilio account.",
           );
-        contexts.set(callId, {
+        const attachedTools = await tools.resolve(agent.toolIds);
+        await contexts.setAsync(callId, {
           agent,
-          tools: tools.resolve(agent.toolIds),
+          tools: attachedTools,
           brief: buildBrief(input.context, input.plannedMinutes),
           direction: "outbound",
           purpose: "conversation",
@@ -398,21 +480,26 @@ export const createAdminApp = (d: HttpDeps): Express => {
           statusUrl: `${env.PUBLIC_BASE_URL}/twilio/status?callId=${callId}`,
           voicemail: agent.voicemailDetection,
         });
-        contexts.bind(callId, sid);
+        await contexts.bindAsync(callId, sid);
         const record =
           registry.get(sid) ??
           registry.create({
             sid,
             agentId: agent.id,
+            assistant: structuredClone(agent),
+            tools: structuredClone(attachedTools),
             direction: "outbound",
             from,
             to: input.to,
             status: "initiating",
           });
         traces.for(sid).log("call.placed", { agent: agent.name, callId });
+        await registry.flush();
+        await traces.flush();
         return res.status(201).json(record);
       } catch (e) {
-        contexts.delete(callId);
+        await d.callState?.release(callId);
+        await contexts.deleteAsync(callId);
         throw e;
       } finally {
         d.pendingCalls--;
@@ -421,7 +508,7 @@ export const createAdminApp = (d: HttpDeps): Express => {
   );
   app.get(
     "/api/calls/:sid/transfer",
-    handle((req, res) =>
+    handle(async (req, res) =>
       res.json(d.warmTransfers?.view(req.params.sid) ?? null),
     ),
   );
@@ -432,37 +519,111 @@ export const createAdminApp = (d: HttpDeps): Express => {
       if (!record || !d.warmTransfers)
         throw new HttpError(404, "Warm transfer not found.");
       await d.warmTransfers.retry(record.id);
+      await registry.flush();
+      await traces.flush();
       return res.json(d.warmTransfers.view(req.params.sid));
     }),
   );
   app.get(
     "/api/calls/:sid",
-    handle((req, res) => {
-      const r = registry.get(req.params.sid);
+    handle(async (req, res) => {
+      const r = await registry.load(req.params.sid);
       if (!r) throw new HttpError(404, "Call not found.");
+      await registry.flush();
+      await traces.flush();
       return res.json(r);
     }),
   );
   app.post(
     "/api/calls/:sid/end",
     handle(async (req, res) => {
-      const r = registry.get(req.params.sid);
+      const r = await registry.load(req.params.sid);
       if (!r) throw new HttpError(404, "Call not found.");
       if (!["completed", "failed"].includes(r.status)) {
         await telephony.endCall(r.sid);
         await d.warmTransfers?.callerEnded(r.sid);
         registry.patch(r.sid, { endedReason: "user-ended" });
         registry.update(r.sid, "completed");
+        await d.finalizeCall?.(r.sid);
       }
+      await registry.flush();
+      await traces.flush();
       return res.json(registry.get(r.sid));
     }),
   );
   app.get(
     "/api/calls/:sid/trace",
-    handle((req, res) => {
+    handle(async (req, res) => {
+      if (d.calls) {
+        const record = await d.calls.get(req.params.sid);
+        if (!record) throw new HttpError(404, "Call not found.");
+        await registry.flush();
+        await traces.flush();
+        return res.json(
+          await d.calls.trace(
+            req.params.sid,
+            z
+              .object({
+                limit: z.coerce.number().int().min(1).max(1000).optional(),
+                eventsCursor: z.string().optional(),
+                transcriptCursor: z.string().optional(),
+              })
+              .parse(req.query),
+          ),
+        );
+      }
       const trace = traces.get(req.params.sid);
       if (!trace) throw new HttpError(404, "No trace available for this call.");
+      await registry.flush();
+      await traces.flush();
       return res.json(trace.view());
+    }),
+  );
+  app.post(
+    "/api/calls/:sid/storage/retry",
+    handle(async (req, res) => {
+      if (!d.calls || !d.retryStorage)
+        throw new HttpError(503, "Storage queue is unavailable.");
+      const record = await d.calls.get(req.params.sid);
+      if (!record) throw new HttpError(404, "Call not found.");
+      if (!["completed", "failed"].includes(record.status))
+        throw new HttpError(409, "Wait for the call to end.");
+      await d.retryStorage(record.sid);
+      return res.status(202).json({ status: "queued" });
+    }),
+  );
+  app.get(
+    "/api/calls/:sid/usage",
+    handle(async (req, res) => {
+      if (!d.calls) throw new HttpError(503, "Usage storage is unavailable.");
+      if (!(await d.calls.get(req.params.sid)))
+        throw new HttpError(404, "Call not found.");
+      await traces.flush();
+      return res.json({
+        callId: req.params.sid,
+        usage:
+          (await d.calls.getBillingUsage(req.params.sid)) ??
+          (await d.calls.getUsage(req.params.sid)) ??
+          null,
+      });
+    }),
+  );
+  app.get(
+    "/api/calls/:sid/artifacts/:kind",
+    handle(async (req, res) => {
+      if (!d.calls || !d.objects)
+        throw new HttpError(503, "Artifact storage is unavailable.");
+      const record = await d.calls.get(req.params.sid);
+      if (!record) throw new HttpError(404, "Call not found.");
+      const kind = z
+        .enum(["transcript", "messages", "logs", "recording"])
+        .parse(req.params.kind);
+      const artifact = record.artifact?.[kind];
+      if (!artifact) throw new HttpError(404, "Artifact is not available yet.");
+      return res.json({
+        url: await d.objects.signedUrl(artifact.key),
+        expiresIn: 300,
+      });
     }),
   );
   if (d.meetings) app.use(meetingRoutes(d.meetings));
@@ -473,9 +634,14 @@ export const createPublicApp = (d: HttpDeps): Express => {
   const { telephony, store, tools, registry, traces, contexts } = d;
   const app = express();
   app.use(express.urlencoded({ extended: false, limit: "64kb" }));
-  app.use(requestLog(traces, "twilio"));
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
   const verified: RequestHandler = (req, res, next) => {
+    void Promise.resolve(d.twilioSettings?.refresh()).then(
+      () => verifyRequest(req, res, next),
+      next,
+    );
+  };
+  const verifyRequest: RequestHandler = (req, res, next) => {
     if (
       !telephony.validateWebhook(
         `${env.PUBLIC_BASE_URL}${req.originalUrl}`,
@@ -489,17 +655,22 @@ export const createPublicApp = (d: HttpDeps): Express => {
         signed: !!req.get("x-twilio-signature"),
         hint: "Match PUBLIC_BASE_URL to the current HTTPS ngrok origin, restart the backend, and reassign the number if the URL changed.",
       };
-      if (typeof req.body?.CallSid === "string")
-        traces.for(req.body.CallSid).log("twilio.webhook_rejected", detail);
-      else logEvent("twilio.webhook_rejected", detail);
+      logEvent("twilio.webhook_rejected", detail);
       res.status(403).end();
       return;
     }
-    if (typeof req.body?.CallSid === "string")
-      traces
-        .for(req.body.CallSid)
-        .log("twilio.webhook_verified", { path: req.path });
-    next();
+    const sid = req.body?.CallSid;
+    if (
+      sid !== undefined &&
+      sid !== "" &&
+      (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid))
+    ) {
+      res.status(400).json({ error: "Invalid call identifier." });
+      return;
+    }
+    if (typeof sid === "string" && sid)
+      traces.for(sid).log("twilio.webhook_verified", { path: req.path });
+    requestLog(traces, "twilio")(req, res, next);
   };
   const bodySchema = z.object({
     CallSid: z.string().min(1),
@@ -509,18 +680,27 @@ export const createPublicApp = (d: HttpDeps): Express => {
     CallStatus: z.string().optional(),
     CallDuration: z.string().optional(),
   });
-  const stream = (agentId: string, callId: string) => {
-    const sid = contexts.get(callId)?.sid;
+  const stream = async (agentId: string, callId: string) => {
+    const sid = (await contexts.getAsync(callId))?.sid;
     if (sid) {
       traces.for(sid).log("media.awaiting_connection", {
         callId,
         mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
       });
       setTimeout(() => {
-        if (contexts.get(callId))
-          traces.for(sid).log("media.start_timeout", {
-            hint: "Twilio has not started /media. Check ngrok inspection, HTTPS/WSS reachability and Twilio stream errors; keep one backend process.",
-          });
+        void contexts
+          .getAsync(callId)
+          .then((context) => {
+            if (context)
+              traces.for(sid).log("media.start_timeout", {
+                hint: "Twilio has not started /media. Check HTTPS/WSS reachability and Twilio stream errors.",
+              });
+          })
+          .catch((error) =>
+            traces
+              .for(sid)
+              .log("media.context_check_failed", errorDetail(error)),
+          );
       }, 15000).unref();
     }
     return telephony.streamTwiml(
@@ -532,13 +712,14 @@ export const createPublicApp = (d: HttpDeps): Express => {
   app.post(
     "/twilio/voice/inbound",
     verified,
-    handle((req, res) => {
+    handle(async (req, res) => {
       const b = bodySchema.parse(req.body),
-        assigned = store.agentForNumber(b.To),
+        assigned = await store.agentForNumber(b.To),
         agent = assigned ? effectiveAssistant(assigned) : undefined;
       res.type("text/xml");
-      const existingId = contexts.idForSid(b.CallSid);
-      if (agent && existingId) return res.send(stream(agent.id, existingId));
+      const existingId = await contexts.idForSidAsync(b.CallSid);
+      if (agent && existingId)
+        return res.send(await stream(agent.id, existingId));
       const missing = missingConfiguration(d);
       const reason = !agent
         ? "no-agent-assigned"
@@ -564,12 +745,15 @@ export const createPublicApp = (d: HttpDeps): Express => {
         registry.create({
           sid: b.CallSid,
           agentId: agent?.id ?? "",
+          assistant: agent ? structuredClone(agent) : undefined,
           direction: "inbound",
           from: b.From,
           to: b.To,
           status: "failed",
           endedReason: reason,
         });
+        await registry.flush();
+        await traces.flush();
         return res.send(
           telephony.rejectTwiml(
             "Sorry, this number is not available right now.",
@@ -583,9 +767,15 @@ export const createPublicApp = (d: HttpDeps): Express => {
         firstMessageMode: agent.firstMessageMode,
       });
       const callId = randomUUID();
-      contexts.set(callId, {
+      if (
+        d.callState &&
+        !(await d.callState.reserve(callId, env.MAX_CONCURRENT_CALLS, 600000))
+      )
+        throw new HttpError(503, "Concurrent call limit reached.");
+      const attachedTools = await tools.resolve(agent.toolIds);
+      await contexts.setAsync(callId, {
         agent,
-        tools: tools.resolve(agent.toolIds),
+        tools: attachedTools,
         brief: "",
         direction: "inbound",
         purpose: "conversation",
@@ -594,18 +784,22 @@ export const createPublicApp = (d: HttpDeps): Express => {
       registry.create({
         sid: b.CallSid,
         agentId: agent.id,
+        assistant: structuredClone(agent),
+        tools: structuredClone(attachedTools),
         direction: "inbound",
         from: b.From,
         to: b.To,
         status: "connected",
       });
-      return res.send(stream(agent.id, callId));
+      await registry.flush();
+      await traces.flush();
+      return res.send(await stream(agent.id, callId));
     }),
   );
   app.post(
     "/twilio/voice/outbound",
     verified,
-    handle((req, res) => {
+    handle(async (req, res) => {
       const b = bodySchema.parse(req.body),
         q = z
           .object({
@@ -614,12 +808,12 @@ export const createPublicApp = (d: HttpDeps): Express => {
             token: z.string(),
           })
           .parse(req.query);
-      const context = contexts.get(q.callId);
+      const context = await contexts.getAsync(q.callId);
       if (
         !context ||
         context.agent.id !== q.agentId ||
         !verifyStreamToken(q.agentId, q.callId, q.token) ||
-        !contexts.bind(q.callId, b.CallSid)
+        !(await contexts.bindAsync(q.callId, b.CallSid))
       ) {
         traces.for(b.CallSid).log("outbound.context_rejected", {
           contextPresent: !!context,
@@ -632,6 +826,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
         registry.create({
           sid: b.CallSid,
           agentId: q.agentId,
+          assistant: structuredClone(context.agent),
+          tools: structuredClone(context.tools),
           direction: "outbound",
           from: b.From,
           to: b.To,
@@ -648,22 +844,26 @@ export const createPublicApp = (d: HttpDeps): Express => {
       });
       res.type("text/xml");
       if (action === "hangup") {
-        contexts.delete(q.callId);
+        await contexts.deleteAsync(q.callId);
         registry.patch(b.CallSid, {
           endedReason: b.AnsweredBy.startsWith("machine")
             ? "voicemail"
             : "answer-detection-ended",
         });
+        await registry.flush();
+        await traces.flush();
         return res.send("<Response><Hangup/></Response>");
       }
-      context.purpose = action;
-      return res.send(stream(q.agentId, q.callId));
+      await contexts.updatePurposeAsync(q.callId, action);
+      await registry.flush();
+      await traces.flush();
+      return res.send(await stream(q.agentId, q.callId));
     }),
   );
   app.post(
     "/twilio/stream-status",
     verified,
-    handle((req, res) => {
+    handle(async (req, res) => {
       const b = z
         .object({
           CallSid: z.string(),
@@ -672,6 +872,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
           StreamError: z.string().optional(),
         })
         .parse(req.body);
+      await registry.load(b.CallSid);
       traces.for(b.CallSid).log("twilio.stream_status", {
         streamSid: b.StreamSid ?? "",
         event: b.StreamEvent,
@@ -681,6 +882,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
         registry.patch(b.CallSid, {
           endedReason: `media-stream-error: ${b.StreamError ?? "Check Twilio stream diagnostics."}`,
         });
+      await registry.flush();
+      await traces.flush();
       return res.status(204).end();
     }),
   );
@@ -691,17 +894,20 @@ export const createPublicApp = (d: HttpDeps): Express => {
       const b = bodySchema.parse(req.body),
         status = b.CallStatus ? statusMap[b.CallStatus] : undefined;
       if (!registry.get(b.CallSid) && typeof req.query.callId === "string") {
-        const c = contexts.get(req.query.callId);
-        if (c && contexts.bind(req.query.callId, b.CallSid))
+        const c = await contexts.getAsync(req.query.callId);
+        if (c && (await contexts.bindAsync(req.query.callId, b.CallSid)))
           registry.create({
             sid: b.CallSid,
             agentId: c.agent.id,
+            assistant: structuredClone(c.agent),
+            tools: structuredClone(c.tools),
             direction: "outbound",
             from: c.from ?? b.From,
             to: c.to ?? b.To,
             status: "initiating",
           });
       }
+      await registry.load(b.CallSid);
       if (status) registry.update(b.CallSid, status);
       if (status === "failed")
         registry.patch(b.CallSid, { endedReason: b.CallStatus });
@@ -715,10 +921,13 @@ export const createPublicApp = (d: HttpDeps): Express => {
             : "",
       });
       if (status === "completed" || status === "failed") {
+        if (typeof req.query.callId === "string")
+          await d.callState?.release(req.query.callId);
         if (status === "completed") {
           try {
             const usage = await d.telephony.getCallUsage(b.CallSid);
 
+            d.costs?.addTelephonyUsage(b.CallSid, usage);
             traces.for(b.CallSid).log("twilio.usage", {
               duration_seconds: Number(usage.duration ?? b.CallDuration ?? 0),
               price: usage.price ?? "pending",
@@ -730,9 +939,12 @@ export const createPublicApp = (d: HttpDeps): Express => {
             });
           }
         }
-        const contextId = contexts.idForSid(b.CallSid);
-        if (contextId) contexts.delete(contextId);
-        void d.warmTransfers?.callerEnded(b.CallSid);
+        const contextId = await contexts.idForSidAsync(b.CallSid);
+        if (contextId) {
+          await d.callState?.release(contextId);
+          await contexts.deleteAsync(contextId);
+        }
+        await d.warmTransfers?.callerEnded(b.CallSid);
         traces.for(b.CallSid).finish();
         const secs =
           req.body.CallDuration !== undefined
@@ -741,19 +953,24 @@ export const createPublicApp = (d: HttpDeps): Express => {
               ? 0
               : undefined;
         d.costs?.finalize(b.CallSid, secs);
+        await d.finalizeCall?.(b.CallSid);
+        await d.callState?.removeLiveCall(b.CallSid);
         if (typeof req.query.callId === "string")
-          contexts.delete(req.query.callId);
+          await contexts.deleteAsync(req.query.callId);
       }
+      await registry.flush();
+      await traces.flush();
       return res.status(204).end();
     }),
   );
   app.post(
     "/twilio/transfer-status",
     verified,
-    handle((req, res) => {
+    handle(async (req, res) => {
       const b = z
         .object({ CallSid: z.string(), DialCallStatus: z.string() })
         .parse(req.body);
+      await registry.load(b.CallSid);
       registry.patch(b.CallSid, {
         transferStatus: b.DialCallStatus,
         endedReason: `transfer-${b.DialCallStatus}`,
@@ -761,7 +978,25 @@ export const createPublicApp = (d: HttpDeps): Express => {
       traces
         .for(b.CallSid)
         .log("transfer.finished", { status: b.DialCallStatus });
+      await registry.flush();
+      await traces.flush();
       return res.type("text/xml").send("<Response><Hangup/></Response>");
+    }),
+  );
+  app.post(
+    "/twilio/recording-status",
+    verified,
+    handle(async (req, res) => {
+      const body = z
+        .object({
+          CallSid: z.string().regex(/^CA[a-f0-9]{32}$/i),
+          RecordingSid: z.string().regex(/^RE[a-f0-9]{32}$/i),
+          RecordingStatus: z.string(),
+        })
+        .parse(req.body);
+      if (body.RecordingStatus === "completed")
+        await d.recordingReady?.(body.CallSid, body.RecordingSid);
+      return res.status(204).end();
     }),
   );
   if (d.warmTransfers)

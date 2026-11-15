@@ -84,7 +84,7 @@ test("inbound rejection, signature failure and Twilio stream errors remain visib
     STREAM_SECRET: "test-signing-secret-with-at-least-32-characters",
   });
   t.after(() => Object.assign(env, old));
-  const d: HttpDeps = {
+  const d: Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } = {
     store: new AgentStore(agent()),
     registry: new CallRegistry(),
     contexts: new ContextStore(),
@@ -143,10 +143,11 @@ test("inbound rejection, signature failure and Twilio stream errors remain visib
     403,
   );
   assert.ok(
-    diagnosticEvents("CA-bad-signature").some(
+    diagnosticEvents("system").some(
       (e) => e.event === "twilio.webhook_rejected",
     ),
   );
+  assert.equal(d.traces.get("CA-bad-signature"), undefined);
   d.telephony.validateWebhook = () => true;
   await post("/twilio/stream-status", {
     CallSid: "CA-stream-error",

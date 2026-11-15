@@ -21,6 +21,7 @@ export const createRealtimeSessionFactory =
         instructions: buildSystemPrompt(agent, brief),
         voice: agent.realtimeVoice,
         model: env.OPENAI_REALTIME_MODEL,
+        trace,
       },
       {
         onReady: () => {

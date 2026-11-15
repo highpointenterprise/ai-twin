@@ -192,12 +192,12 @@ export const elevenLabsSynthesizerFactory =
     return {
       push: async (text) => {
         await ready;
-        totalCharacters += text.length;
         if (closed) throw new Error("Synthesis cancelled.");
         if (socket.readyState !== WebSocket.OPEN)
           throw new Error("ElevenLabs socket closed before text was sent.");
         socket.send(JSON.stringify({ text: `${text} `, flush: true }));
-        trace?.usage?.addTts(config.model, text.length);
+        totalCharacters += text.length + 1;
+        trace?.usage?.addTts(config.model, text.length + 1);
         log("tts.text_sent", {
           characters: text.length,
           total_characters: totalCharacters,
