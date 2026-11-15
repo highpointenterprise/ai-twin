@@ -20,7 +20,7 @@ export function meetingRoutes(service: MeetingService): Router {
   router.get("/api/meetings", (_req, res) => res.json(service.list()));
   router.post(
     "/api/meetings",
-    handle((req, res) => res.status(202).json(service.join(req.body))),
+    handle(async (req, res) => res.status(202).json(await service.joinAsync(req.body))),
   );
   router.get(
     "/api/meetings/:id",

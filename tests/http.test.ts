@@ -16,7 +16,7 @@ import { SessionPool } from "../server/engine/pool";
 import { env } from "../lib/env";
 import { agent, telephony } from "./helpers";
 import { signStreamToken } from "../lib/token";
-const deps = (): HttpDeps => ({
+const deps = (): Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } => ({
   store: new AgentStore(agent()),
   tools: new ToolRegistry(),
   registry: new CallRegistry(),
@@ -26,6 +26,40 @@ const deps = (): HttpDeps => ({
   telephony: telephony(),
   listVoices: async () => [],
   pendingCalls: 0,
+});
+
+test("configuration lists paginate by stable identifier and validate bounds", async (t) => {
+  const d = deps();
+  d.store.create(agent({ name: "Second" }));
+  const { server, url } = await listen(createAdminApp(d));
+  t.after(() => server.close());
+  const first = await fetch(`${url}/api/agents?limit=1`);
+  const firstPage = await first.json();
+  assert.equal(firstPage.length, 1);
+  assert.equal(first.headers.get("X-Next-Cursor"), firstPage[0].id);
+  const secondPage = await (await fetch(`${url}/api/agents?limit=1&after=${firstPage[0].id}`)).json();
+  assert.equal(secondPage.length, 1);
+  assert.notEqual(secondPage[0].id, firstPage[0].id);
+  assert.equal((await fetch(`${url}/api/agents?limit=1001`)).status, 400);
+  assert.equal((await fetch(`${url}/api/tools?after=invalid`)).status, 400);
+});
+
+test("unverified and malformed webhook call identifiers never allocate call traces", async (t) => {
+  const d = deps();
+  d.telephony.validateWebhook = () => false;
+  const { server, url } = await listen(createPublicApp(d));
+  t.after(() => server.close());
+  const request = (sid: string) => fetch(`${url}/twilio/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ CallSid: sid, CallStatus: "completed" }),
+  });
+  assert.equal((await request("CA-untrusted")).status, 403);
+  assert.equal(d.traces.get("CA-untrusted"), undefined);
+  d.telephony.validateWebhook = () => true;
+  const longSid = "C".repeat(81);
+  assert.equal((await request(longSid)).status, 400);
+  assert.equal(d.traces.get(longSid), undefined);
 });
 async function listen(app: ReturnType<typeof createAdminApp>) {
   const server = app.listen(0, "127.0.0.1");

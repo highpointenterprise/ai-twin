@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import type { MongoCallRepository } from "../storage/calls";
+import { PendingWrites } from "../storage/pending";
 import type {
   CallTraceView,
   TraceEvent,
@@ -10,6 +13,9 @@ type Detail = TraceEvent["detail"];
 
 const MAX_EVENTS = 600;
 const MAX_TRACES = 100;
+let eventSequence = 0;
+const eventIdentity = () =>
+  `${String(++eventSequence).padStart(16, "0")}-${randomUUID()}`;
 
 export const logEvent = (event: string, detail: Detail = {}): void => {
   writeDiagnostic("system", event, detail);
@@ -22,24 +28,77 @@ export class CallTrace {
   private readonly startedAt = Date.now();
   private finished = false;
   readonly usage = new UsageMeter();
+  private usageTimer?: NodeJS.Timeout;
+  private readonly usageProducerId = randomUUID();
+  private usageRevision = 0;
+  private saveUsage = () => {
+    clearTimeout(this.usageTimer);
+    this.usageTimer = undefined;
+    const snapshot = this.usage.snapshot(),
+      revision = ++this.usageRevision;
+    if (this.repository)
+      this.pending.enqueue(async () =>
+        this.repository!.saveUsageSegment(
+          this.sid,
+          this.usageProducerId,
+          snapshot,
+          revision,
+        ),
+      );
+  };
 
-  constructor(private readonly sid: string) {}
+  constructor(
+    private readonly sid: string,
+    private readonly repository?: MongoCallRepository,
+    private readonly pending = new PendingWrites(),
+  ) {
+    if (this.repository)
+      this.usage.subscribe(() => {
+        this.usageTimer ??= setTimeout(this.saveUsage, 1000);
+        this.usageTimer.unref();
+      });
+  }
+
+  flushUsage(): void {
+    if (this.usageTimer) this.saveUsage();
+  }
+  async flush(): Promise<void> {
+    this.flushUsage();
+    await this.pending.flush();
+  }
 
   log(event: string, detail: Detail = {}): void {
     const at = Date.now();
     detail = safeDetail(detail);
     this.events.push({ at, event, detail });
+    const eventId = eventIdentity();
+    if (this.repository)
+      this.pending.enqueue(async () =>
+        this.repository!.appendEvent(this.sid, { at, event, detail }, eventId),
+      );
     if (this.events.length > MAX_EVENTS) this.events.shift();
     writeDiagnostic(this.sid, event, detail);
   }
 
   say(role: TranscriptLine["role"], text: string, latencyMs?: number): void {
-    this.transcript.push({ at: Date.now(), role, text, latencyMs });
+    const line = { at: Date.now(), role, text, latencyMs };
+    this.transcript.push(line);
+    if (this.transcript.length > MAX_EVENTS) this.transcript.shift();
+    const eventId = eventIdentity();
+    if (this.repository)
+      this.pending.enqueue(async () =>
+        this.repository!.appendTranscript(this.sid, line, eventId),
+      );
     if (latencyMs !== undefined) this.latencies.push(latencyMs);
+    if (this.latencies.length > MAX_EVENTS) this.latencies.shift();
     this.log(
       `transcript.${role}`,
       latencyMs === undefined ? { text } : { text, latency_ms: latencyMs },
     );
+  }
+
+  get isFinished(): boolean {
+    return this.finished;
   }
 
   finish(): void {
@@ -74,14 +133,24 @@ export class CallTrace {
 
 export class TraceStore {
   private readonly traces = new Map<string, CallTrace>();
+  private readonly pending = new PendingWrites();
+  constructor(private readonly repository?: MongoCallRepository) {}
+  async flush(): Promise<void> {
+    for (const trace of this.traces.values()) trace.flushUsage();
+    await this.pending.flush();
+  }
 
   for(sid: string): CallTrace {
     const existing = this.traces.get(sid);
     if (existing) return existing;
-    const created = new CallTrace(sid);
+    const created = new CallTrace(sid, this.repository, this.pending);
     this.traces.set(sid, created);
-    if (this.traces.size > MAX_TRACES)
-      this.traces.delete(this.traces.keys().next().value as string);
+    if (this.traces.size > MAX_TRACES) {
+      const old = [...this.traces].find(
+        ([id, trace]) => id !== sid && trace.isFinished,
+      );
+      if (old) this.traces.delete(old[0]);
+    }
     return created;
   }
 

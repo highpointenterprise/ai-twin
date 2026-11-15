@@ -49,8 +49,11 @@ flowchart LR
 - `server/transfers/`: Twilio conference/hold TwiML, private consultation, fixed-prompt acceptance verification, and persisted warm-transfer state machine. A coordinator owns the handoff independently of the original media session's cancellation. Its only consultation tools are `transferSuccessful` and `transferCancel`.
 - `server/http/`: signed Twilio webhooks and media input; separate loopback admin API for CRUD and call control.
 - `server/meetings/`: independent browser driver, lifecycle service, persistence, meeting playback and HeyGen adapter. A meeting reuses `StandardSession` with PCM formats and an `AudioOutputPort`, while Twilio defaults remain 8 kHz mu-law. Browser assets are bundled locally with esbuild; avatar tokens are only passed to the worker's isolated receiver.
-- `server/store/`: atomic JSON persistence for assistant configurations, assignments, tools and recent call records. Per-call snapshots freeze assistant and tool settings at call creation. Stream context is bound to the actual call SID and consumed once.
+- `server/storage/`: indexed MongoDB repositories for configuration, calls, events, transcripts, usage and costs; Redis contexts, admission limits and jobs; private S3-compatible artifact storage.
+- `server/store/`: repository contracts and bounded live-process adapters. Legacy JSON adapters remain for tests and the separate meeting subsystem. Per-call snapshots freeze assistant and tool settings at call creation. Redis context is bound to the actual call SID and consumed atomically once.
 - `app/components/`: assistant settings, reusable tool editor, call controls/history.
+
+The meeting components shown above remain the pre-existing subsystem. Meetings are outside this storage migration and continue using their existing local meeting store.
 
 ## Lifecycle and important semantics
 
@@ -67,12 +70,14 @@ flowchart LR
 
 ## Persistence and deployment
 
-Run one backend process with its own `DATA_DIR`; atomic JSON files are not a distributed database. Do not run multiple writers against one directory. Active sessions/context and detailed traces live in memory. Recent call records persist, but detailed trace playback is unavailable after a restart. Restored nonterminal call records initially become `failed / server-restarted`, referring to interruption of this server's session, not verified downstream telephony status.
+MongoDB is the durable source for assistant/tool/number configuration and call history. Transcript and event records are stored separately from call metadata and survive process restarts. Redis coordinates expiring contexts, call admission and retryable artifact jobs. Private object storage keeps completed-call logs, transcripts and recordings. See [storage setup and migration](storage.md) for local MinIO, production R2 and importing old JSON files.
 
-Warm-transfer snapshots and progress persist separately in `warm-transfers.json`. On restart the coordinator queries Twilio: live callers in unfinished consultations are recovered without redialing the recipient; an already connected native conference is preserved. A verified live caller record is restored. A Twilio outage can prevent recovery; the failure remains visible for intervention. Completed human conferences continue independently of the assistant and its duration timer. See [warm transfer](warm-transfer.md) for settings and failure boundaries.
+An active speech session and WebSocket still belong to one media worker. Shared storage cannot resume a lost media stream; drain workers before deployment and route call control to the owning worker. Durable history is not limited to the former 200-record local buffer. Use paginated APIs to read it.
+
+Warm-transfer progress now has a MongoDB persistence adapter and restart recovery, but the coordinator remains process-owned. Route warm-transfer callbacks/control to the owning worker and run only one transfer-recovery coordinator per deployment. Redis context sharing alone does not provide distributed ownership of this state machine. During recovery the coordinator queries Twilio before restoring a live caller; a provider outage can still require operator intervention. See [warm transfer](warm-transfer.md) for its behavior.
 
 The admin API binds to loopback, and Next.js proxies `/api` to port 8081. Only the voice service on 8080 should receive Twilio public callbacks. There is no multi-user authentication yet; this is a local development workspace, not a public SaaS deployment.
 
 Meeting admission precedes AI/avatar startup. Only attached custom functions are available in meetings. Cancellation closes the browser, transcriber, generation and avatar; late admission/render callbacks cannot revive a stopped session. Voice-only playback acknowledges actual browser audio completion; avatar playback combines provider event correlation with observed media drain. The avatar receiver uses a separate frame so its WebRTC audio is never transcribed as customer speech.
 
-Meeting status records persist in `meetings.json`; browser cookies and provider tokens are never included. Restart marks unfinished meetings failed and requires a new join. Chromium workers are bounded by `MAX_CONCURRENT_MEETINGS` separately from phone calls. See [Google Meet setup and live-validation limits](google-meet.md). Real Meet UI compatibility, provider audio and lip sync still require deployment testing.
+The separate meeting subsystem retains its existing local persistence; status records persist in `meetings.json`; browser cookies and provider tokens are never included. Restart marks unfinished meetings failed and requires a new join. Chromium workers are bounded by `MAX_CONCURRENT_MEETINGS` separately from phone calls. See [Google Meet setup and live-validation limits](google-meet.md). Real Meet UI compatibility, provider audio and lip sync still require deployment testing.

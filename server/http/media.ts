@@ -1,5 +1,5 @@
 import type { Server } from "node:http";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type RawData } from "ws";
 import { z } from "zod";
 import { parseJson } from "../../lib/json";
 import { base64ByteLength } from "../speech/audio";
@@ -10,6 +10,8 @@ import type { TraceStore } from "../observability/trace";
 import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
 import { randomUUID } from "node:crypto";
+import { env } from "../../lib/env";
+import type { RedisCallState } from "../storage/redis";
 import {
   writeDiagnostic,
   errorDetail,
@@ -40,7 +42,10 @@ export function attachMediaServer(
     registry: CallRegistry;
     traces: TraceStore;
     contexts: ContextStore;
-    onResumed?: (transferId: string, sid: string) => void;
+    onResumed?: (transferId: string, sid: string) => void | Promise<void>;
+    callState?: RedisCallState;
+    maxConcurrentCalls?: number;
+    onStarted?: (sid: string) => Promise<void>;
   },
 ): WebSocketServer {
   const wss = new WebSocketServer({
@@ -73,7 +78,21 @@ export function attachMediaServer(
       });
       socket.close(1008, "Missing start event");
     }, 10000);
+    let leaseId: string | undefined;
+    let heartbeat: NodeJS.Timeout | undefined;
+    let liveUpdate = Promise.resolve();
+    let released = false;
     const release = () => {
+      released = true;
+      clearInterval(heartbeat);
+      if (leaseId && deps.callState) {
+        const id = leaseId;
+        leaseId = undefined;
+        void liveUpdate.catch(() => {}).then(async () => {
+          await deps.callState!.release(id);
+          await deps.callState!.removeLiveCall(sid, id);
+        }).catch((error) => log("media.lease_release_failed", errorDetail(error)));
+      }
       clearTimeout(timeout);
       if (session) {
         session.close();
@@ -81,7 +100,8 @@ export function attachMediaServer(
         session = undefined;
       }
     };
-    socket.on("message", (raw) => {
+    const processMessage = async (raw: RawData): Promise<void> => {
+      if (socket.readyState !== socket.OPEN) return;
       try {
         const data = parseJson(raw.toString()) as {
           event?: string;
@@ -100,8 +120,12 @@ export function attachMediaServer(
         if (data.event === "start") {
           const { start } = startSchema.parse(data),
             p = start.customParameters;
-          sid = start.callSid;
-          const context = deps.contexts.get(p.callId);
+          if (!verifyStreamToken(p.agentId, p.callId, p.token)) {
+            log("media.rejected", { reason: "invalid-stream-token" });
+            socket.close(1008, "Rejected stream");
+            return;
+          }
+          const context = await deps.contexts.getAsync(p.callId);
           const reason = session
             ? "duplicate-start"
             : deps.pool.isFull
@@ -124,7 +148,46 @@ export function attachMediaServer(
             socket.close(1008, "Rejected stream");
             return;
           }
-          const snapshot = deps.contexts.take(p.callId, start.callSid)!;
+          if (deps.callState && !(await deps.callState.reserve(p.callId, deps.maxConcurrentCalls ?? env.MAX_CONCURRENT_CALLS))) {
+            socket.close(1013, "Concurrent call limit reached");
+            return;
+          }
+          const snapshot = await deps.contexts.takeAsync(p.callId, start.callSid);
+          if (snapshot) { leaseId = p.callId; sid = start.callSid; }
+          if (!snapshot || socket.readyState !== socket.OPEN || deps.pool.isFull) {
+            if (snapshot) release();
+            socket.close(1008, "Call context consumed or session unavailable");
+            return;
+          }
+          leaseId = p.callId;
+          released = false;
+          const record = await deps.registry.load(sid);
+          if (deps.registry.repository && !record) throw new Error("Call record is not available.");
+          // Each trace persists its own cumulative producer segment. A resumed
+          // worker starts a new segment; restoring call totals here would bill
+          // prior workers' usage again.
+          const refreshLiveState = async () => {
+            if (released || !deps.callState) return;
+            if (!(await deps.callState.reserve(p.callId, deps.maxConcurrentCalls ?? env.MAX_CONCURRENT_CALLS)))
+              throw new Error("Live call lease could not be renewed.");
+            if (!released) await deps.callState.setLiveCall(sid, {
+              contextId: p.callId,
+              streamSid: start.streamSid,
+              assistantId: snapshot.agent.id,
+              status: "in-progress",
+              updatedAt: Date.now(),
+            });
+          };
+          await refreshLiveState();
+          if (released || socket.readyState !== socket.OPEN) { release(); return; }
+          heartbeat = setInterval(() => {
+            liveUpdate = liveUpdate.then(refreshLiveState).catch((error) => {
+              log("media.lease_failed", errorDetail(error));
+              socket.close(1011, "Live call state unavailable");
+              release();
+            });
+          }, 30_000);
+          heartbeat.unref();
           authenticated = true;
           clearTimeout(timeout);
           log("media.started", {
@@ -169,11 +232,13 @@ export function attachMediaServer(
                 });
             },
           });
-          if (snapshot.resumeTransferId)
-            deps.onResumed?.(snapshot.resumeTransferId, sid);
           deps.pool.add(session);
+          if (snapshot.resumeTransferId)
+            await deps.onResumed?.(snapshot.resumeTransferId, sid);
+          if (released || socket.readyState !== socket.OPEN) { release(); return; }
           deps.registry.update(sid, "in-progress");
           log("media.session_ready");
+          if (deps.onStarted) void deps.onStarted(sid).catch((error) => log("media.recording_start_failed", errorDetail(error)));
         } else if (
           data.event === "media" &&
           typeof data.media?.payload === "string"
@@ -207,6 +272,18 @@ export function attachMediaServer(
         socket.close(1008, "Invalid media event");
         release();
       }
+    };
+    // Serialize the async handshake and later frames; never deliver audio before
+    // the shared one-use context has been consumed. Bound a stalled handshake.
+    let pendingMessages = 0;
+    let messages = Promise.resolve();
+    socket.on("message", (raw) => {
+      if (pendingMessages >= 512) {
+        socket.close(1013, "Media queue is full");
+        return;
+      }
+      pendingMessages++;
+      messages = messages.then(() => processMessage(raw)).finally(() => { pendingMessages--; });
     });
     socket.on("close", (code, reason) => {
       if (sid) deps.traces.for(sid).usage.addNetwork(inBytes, outBytes);

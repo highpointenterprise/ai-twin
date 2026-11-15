@@ -8,10 +8,14 @@ Node.js 24 and npm 11 were used for validation.
 
 ```sh
 npm ci
+cp .env.example .env # only when .env does not already exist
+# Generate and set CREDENTIAL_ENCRYPTION_KEY in .env, then:
+docker compose up -d --build
+npm run storage:init
 npm run dev
 ```
 
-The workspace runs on port 3000. The admin service binds to `127.0.0.1:8081`; Twilio voice webhooks/media use port 8080. The configuration workspace works without provider credentials. Live-call actions report the missing configuration instead of inventing credentials or simulating success.
+The workspace runs on port 3000. The admin service binds to `127.0.0.1:8081`; Twilio voice webhooks/media use port 8080. MongoDB, Redis and object storage must be configured before the backend starts. The configuration workspace works without calling-provider credentials. Live-call actions report the missing configuration instead of inventing credentials or simulating success.
 
 For a production build of the local workspace:
 
@@ -22,7 +26,7 @@ npm start
 
 ## Connect calling providers
 
-Open **Phone numbers → Connect Twilio**, enter your Account SID and Auth Token, then click **Connect & load numbers**. The backend verifies the credentials, saves them encrypted in `DATA_DIR`, and loads your numbers immediately. No restart is needed. Saved Twilio credentials take precedence over environment variables and remain available after restarting. Your Auth Token is never returned by the API or saved in browser storage.
+Open **Phone numbers → Connect Twilio**, enter your Account SID and Auth Token, then click **Connect & load numbers**. The backend verifies the credentials, saves them encrypted in MongoDB using `CREDENTIAL_ENCRYPTION_KEY`, and loads your numbers immediately. No restart is needed. Saved Twilio credentials take precedence over environment variables and remain available after restarting. Your Auth Token is never returned by the API or saved in browser storage.
 
 For the remaining providers, copy `.env.example` to `.env` **only if `.env` does not already exist**, and supply credentials securely. Never commit `.env`. Twilio credentials can also be configured using `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` on the server.
 
@@ -30,18 +34,18 @@ Loading numbers requires only a working Twilio connection. AI calling additional
 
 `PUBLIC_BASE_URL` must be a public HTTPS **origin** forwarded to port 8080, with WebSocket support for `/media`. The README originally suggested `ngrok http 8080`; an installed/authenticated ngrok or another suitable tunnel can supply that origin. Never forward the admin service to the public Internet. Keep `ADMIN_PORT=8081` unless you also update the Next.js rewrite.
 
-Required outbound hosts: `api.twilio.com`, `api.deepgram.com`, `api.openai.com`, and `api.elevenlabs.io`. This cloud environment currently denies those hosts and has no provider credentials, so real calls remain unvalidated.
+Required outbound hosts: `api.twilio.com`, `api.deepgram.com`, `api.openai.com`, and `api.elevenlabs.io`. Real calling requires deployment credentials and a controlled provider validation.
 
 1. Create/configure an assistant. Set its first-message mode, system prompt, voice, transcriber, speaking plans and call handling.
 2. Create reusable tools under **Tools**, then attach them to the assistant.
 3. In **Phone numbers**, connect Twilio and assign an assistant. Assignment updates that number's Twilio voice webhook once all calling providers are configured.
 4. Click **Make a call** beside a number to select it as the outbound caller ID, or start a call under **Calls**. Call an assigned number for inbound conversations. Inspect the call state, transcript, and tool events.
 
-See [Twilio connection and credential storage](docs/twilio-connection.md) for account changes, storage and troubleshooting.
+See [storage setup, migration and operations](docs/storage.md) and [Twilio connection and credential storage](docs/twilio-connection.md) for account changes, storage and troubleshooting.
 
 ## Troubleshoot silent or missing calls
 
-Open **Diagnostics** to view webhook, media, transcription, model, synthesis and playback stages. Filter by a full Twilio Call SID and use **Download logs** to export recent events. The same events appear in the backend terminal and persist in `DATA_DIR/logs/voice-agent.jsonl` with two rotated backups. Credentials and raw audio are excluded; conversation text may appear.
+Open **Diagnostics** to view webhook, media, transcription, model, synthesis and playback stages. Filter by a full Twilio Call SID and use **Download logs** to export recent events. Call events persist in MongoDB and completed-call logs and transcripts are archived to private object storage. Diagnostic events also appear in the backend terminal. Credentials and raw audio are excluded; conversation text may appear.
 
 For ngrok, run `ngrok http 8080`, set `PUBLIC_BASE_URL` to its current **HTTPS origin**, restart the backend, then use **Phone numbers → Refresh inbound route** for each assigned number. A changed tunnel URL does not automatically update Twilio's saved number webhook. See [call troubleshooting and log interpretation](docs/call-troubleshooting.md).
 
@@ -55,9 +59,9 @@ For ngrok, run `ngrok http 8080`, set `PUBLIC_BASE_URL` to its current **HTTPS o
 - **Custom function** tools with JSON Schema, HTTPS webhook, credential reference, timeout, result correlation and model continuation.
 - Twilio voicemail detection: hang up or play an ElevenLabs message after the greeting, then hang up. Configurable unknown-answer handling.
 - Best-effort English call-screening response and handoff wait.
-- Persistent assistant/tool configuration and recent call history; active-call hangup and in-session traces.
+- MongoDB assistant/tool configuration and durable call history; active-call hangup and in-session traces.
 
-See [warm transfer setup and recovery](docs/warm-transfer.md), [research and parity boundaries](docs/vapi-research.md), and [architecture](docs/architecture.md). This implements the requested initial scope; it is not every Vapi feature.
+See [warm transfer setup and recovery](docs/warm-transfer.md), [research and parity boundaries](docs/voice-platform-research.md), and [architecture](docs/architecture.md). This implements the requested initial scope; it does not implement every hosted voice-platform feature.
 
 ## Send an agent to Google Meet
 
@@ -65,7 +69,7 @@ Install Chromium (`npx playwright install --with-deps chromium`, or set `CHROMIU
 
 For an avatar, also configure `LIVEAVATAR_API_KEY`, select **HeyGen avatar**, and enter your LiveAvatar ID. The LITE integration uses the existing assistant's ElevenLabs audio, with HeyGen's audio/video feeding Meet's virtual microphone and camera. It does not use Recall.ai. Meeting status, transcript and **Leave meeting** are available in the dashboard.
 
-See [Google Meet setup, login, networking and validation](docs/google-meet.md). Browser automation and the LiveAvatar protocol are implemented and tested against controlled fixtures; actual Google Meet admission and live provider media have **not** been validated in this cloud environment. Its current network policy blocks the required services, and no provider credentials are configured.
+See [Google Meet setup, login, networking and validation](docs/google-meet.md). Browser automation and the LiveAvatar protocol are implemented and tested against controlled fixtures; actual Google Meet admission and live provider media have **not** been validated in this cloud environment. Live meeting validation requires the relevant provider credentials and network access.
 
 ## Custom function contract
 

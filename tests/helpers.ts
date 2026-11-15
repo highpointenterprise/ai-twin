@@ -29,6 +29,7 @@ export const telephony = (): Telephony => ({
   placeCall: async () => "CA-test",
   transferCall: async () => {},
   endCall: async () => {},
+  getCallUsage: async () => ({ duration: null, price: null, priceUnit: null }),
   validateWebhook: () => true,
   streamTwiml: (u, p) => `<Stream url="${u}" params='${JSON.stringify(p)}'/>`,
   rejectTwiml: (m) => m,
