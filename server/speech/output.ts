@@ -1,17 +1,251 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AudioOutputPort,
   SessionInit,
-  SynthesizerFactory,
   SpeechSynthesizer,
+  SynthesizerFactory,
 } from "../core/ports";
-import { delay } from "./timing";
 import { errorDetail } from "../observability/diagnostics";
+import { AudioCache } from "./audio-cache";
+import { base64ByteLength } from "./audio";
+import { TurnGate } from "./gate";
+import { delay } from "./timing";
+
+const MAX_UTTERANCE_SECONDS = 180;
+const DEFAULT_CHARS_PER_MS = 0.0145;
+const PLAYOUT_LAG_MS = 120;
+const sharedCache = new AudioCache();
+
+export interface SpeechStreamOptions {
+  gate?: TurnGate;
+  floorMs?: number;
+  cacheKey?: string;
+  onFirstAudio?: (at: number) => void;
+}
+
+export interface SpeechStreamResult {
+  spoken: string;
+  firstAudioAt?: number;
+}
+
+export class SpeechStream {
+  private readonly speechId = randomUUID();
+  private readonly opened = Date.now();
+  private readonly gate: TurnGate;
+  private readonly bytesPerMs: number;
+  private readonly frames: string[] = [];
+  private readonly pending: string[] = [];
+  private synth?: SpeechSynthesizer;
+  private pushChain: Promise<void> = Promise.resolve();
+  private releasing?: Promise<void>;
+  private released = false;
+  private disposed = false;
+  private failure?: Error;
+  private audioBytes = 0;
+  private spokenText = "";
+  private synthesisComplete = false;
+  private sentAudio = false;
+  private counted = false;
+  private cacheHit: readonly string[] | undefined;
+  firstAudioAt?: number;
+
+  constructor(
+    private readonly host: StreamHost,
+    private readonly signal: AbortSignal,
+    private readonly options: SpeechStreamOptions,
+  ) {
+    this.gate = options.gate ?? TurnGate.open();
+    this.bytesPerMs = host.bytesPerSecond / 1000;
+    this.cacheHit = options.cacheKey
+      ? sharedCache.get(options.cacheKey)
+      : undefined;
+    host.trace.log("speech.requested", {
+      speechId: this.speechId,
+      voiceId: host.voiceId,
+      cached: !!this.cacheHit,
+    });
+    signal.addEventListener("abort", this.onAbort, { once: true });
+    if (!this.cacheHit) this.connect();
+  }
+
+  get text(): string {
+    return this.spokenText;
+  }
+
+  write(text: string): void {
+    if (!text.trim() || this.disposed || this.signal.aborted) return;
+    this.spokenText += (this.spokenText ? " " : "") + text.trim();
+    if (this.cacheHit) return;
+    const synth = this.synth!;
+    this.pushChain = this.pushChain
+      .then(() => synth.push(text))
+      .catch((error: unknown) => {
+        this.failure ??= error instanceof Error ? error : new Error("TTS failed");
+      });
+  }
+
+  async finish(): Promise<SpeechStreamResult> {
+    try {
+      await this.pushChain;
+      if (this.failure) throw this.failure;
+      if (!this.spokenText.trim()) return { spoken: "" };
+      if (this.cacheHit) this.replayCached(this.cacheHit);
+      else {
+        await this.synth!.end();
+        this.synthesisComplete = true;
+      }
+      await this.releasing;
+      this.signal.throwIfAborted();
+      if (!this.audioBytes && !this.cacheHit)
+        throw new Error("Speech generation returned no audio.");
+      if (this.audioBytes > this.host.bytesPerSecond * MAX_UTTERANCE_SECONDS)
+        throw new Error("Synthesized utterance exceeded three minutes.");
+      await this.host.drain(
+        this.signal,
+        this.audioBytes / this.bytesPerMs + 15000,
+      );
+      this.storeInCache();
+      return { spoken: this.spokenText, firstAudioAt: this.firstAudioAt };
+    } catch (error) {
+      this.host.trace.log(
+        this.signal.aborted ? "speech.cancelled" : "speech.failed",
+        {
+          speechId: this.speechId,
+          ...errorDetail(error),
+          bytes: this.audioBytes,
+        },
+      );
+      if (!this.signal.aborted) this.host.clearIfSent(this.sentAudio);
+      throw error;
+    } finally {
+      this.dispose();
+    }
+  }
+
+  heardText(): string {
+    if (!this.firstAudioAt || !this.spokenText) return "";
+    const audioMs = this.audioBytes / this.bytesPerMs;
+    const playedMs = Math.max(
+      0,
+      Math.min(Date.now() - this.firstAudioAt - PLAYOUT_LAG_MS, audioMs),
+    );
+    const rate =
+      this.synthesisComplete && audioMs > 0
+        ? this.spokenText.length / audioMs
+        : DEFAULT_CHARS_PER_MS;
+    const chars = Math.floor(playedMs * rate);
+    if (chars >= this.spokenText.length) return this.spokenText;
+    const cut = this.spokenText.lastIndexOf(" ", chars);
+    return cut > 0 ? this.spokenText.slice(0, cut).trim() : "";
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.signal.removeEventListener("abort", this.onAbort);
+    this.synth?.close();
+    if (this.counted) this.host.streamClosed();
+  }
+
+  private readonly onAbort = (): void => {
+    this.synth?.close();
+    this.host.clearIfSent(this.sentAudio);
+  };
+
+  private connect(): void {
+    this.synth = this.host.synthesize(
+      this.host.voiceId,
+      (payload) => this.receive(payload),
+      this.host.voice,
+      this.host.format,
+      {
+        log: (event, detail = {}) =>
+          this.host.trace.log(event, { ...detail, speechId: this.speechId }),
+        usage: this.host.trace.usage,
+      },
+    );
+  }
+
+  private receive(payload: string): void {
+    if (this.signal.aborted || this.disposed) return;
+    this.audioBytes += base64ByteLength(payload);
+    if (this.audioBytes > this.host.bytesPerSecond * MAX_UTTERANCE_SECONDS)
+      return;
+    if (this.options.cacheKey) this.frames.push(payload);
+    this.emit(payload);
+  }
+
+  private emit(payload: string): void {
+    if (this.released) {
+      this.transmit(payload);
+      return;
+    }
+    this.pending.push(payload);
+    this.releasing ??= this.release();
+    void this.releasing.catch(() => undefined);
+  }
+
+  private async release(): Promise<void> {
+    const committedAt = await this.gate.until(this.signal);
+    const floor = committedAt + (this.options.floorMs ?? 0) - Date.now();
+    if (floor > 0) await delay(floor, this.signal);
+    this.signal.throwIfAborted();
+    for (const payload of this.pending.splice(0)) this.transmit(payload);
+    this.released = true;
+  }
+
+  private transmit(payload: string): void {
+    this.host.transport.audio(payload);
+    this.sentAudio = true;
+    if (!this.counted) {
+      this.counted = true;
+      this.host.streamOpened();
+    }
+    if (this.firstAudioAt) return;
+    this.firstAudioAt = Date.now();
+    this.host.trace.log("speech.first_audio_sent", {
+      speechId: this.speechId,
+      ms: this.firstAudioAt - this.opened,
+    });
+    this.options.onFirstAudio?.(this.firstAudioAt);
+  }
+
+  private replayCached(frames: readonly string[]): void {
+    this.host.trace.log("speech.cache_hit", { speechId: this.speechId });
+    for (const payload of frames) {
+      this.audioBytes += base64ByteLength(payload);
+      this.emit(payload);
+    }
+  }
+
+  private storeInCache(): void {
+    const { cacheKey } = this.options;
+    if (!cacheKey || this.cacheHit || !this.frames.length) return;
+    sharedCache.set(cacheKey, this.frames);
+  }
+}
+
+export interface StreamHost {
+  readonly voiceId: string;
+  readonly voice: SessionInit["agent"]["voice"];
+  readonly format: SessionInit["outputAudioFormat"];
+  readonly bytesPerSecond: number;
+  readonly transport: AudioOutputPort;
+  readonly trace: SessionInit["trace"];
+  synthesize: SynthesizerFactory;
+  drain: (signal: AbortSignal, timeoutMs: number) => Promise<void>;
+  clearIfSent: (sent: boolean) => void;
+  streamOpened: () => void;
+  streamClosed: () => void;
+}
+
 export class SpeechOutput {
   private readonly pending = new Map<string, () => void>();
-  active = false;
+  private activeStreams = 0;
+  private lastClear = 0;
   private readonly transport: AudioOutputPort;
   private readonly bytesPerSecond: number;
+
   constructor(
     private readonly init: SessionInit,
     private readonly synthesize: SynthesizerFactory,
@@ -34,6 +268,11 @@ export class SpeechOutput {
     this.bytesPerSecond =
       format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
   }
+
+  get active(): boolean {
+    return this.activeStreams > 0;
+  }
+
   mark(name: string): void {
     this.init.trace.log(
       this.pending.has(name) ? "playback.acknowledged" : "playback.stale_mark",
@@ -41,95 +280,66 @@ export class SpeechOutput {
     );
     this.pending.get(name)?.();
   }
+
   clear(): void {
+    const now = Date.now();
+    if (now - this.lastClear < 100) return;
+    this.lastClear = now;
     this.init.trace.log("playback.clear");
     this.transport.clear();
   }
-  async speak(text: string, signal: AbortSignal, waitMs = 0): Promise<void> {
-    if (!text.trim() || signal.aborted) return;
-    this.active = true;
-    const began = Date.now(),
-      speechId = randomUUID();
-    this.init.trace.log("speech.requested", {
-      speechId,
-      characters: text.length,
-      voiceId: this.init.agent.voiceId,
-      waitMs,
-    });
-    let audioBytes = 0;
-    let audioLimitExceeded = false;
-    let stopped = false;
-    let queue = Promise.resolve();
-    let first = true;
-    let synth: SpeechSynthesizer | undefined;
-    const abort = () => {
-      synth?.close();
-      this.clear();
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    try {
-      synth = this.synthesize(
-        this.init.agent.voiceId,
-        (payload) => {
-          if (signal.aborted || stopped) return;
-          audioBytes += Buffer.from(payload, "base64").length;
-          if (audioBytes > this.bytesPerSecond * 180) {
-            audioLimitExceeded = true;
-            return;
-          }
-          const firstPacket = first;
-          first = false;
-          queue = queue.then(async () => {
-            if (firstPacket && waitMs) await delay(waitMs, signal);
-            if (!signal.aborted && !stopped) {
-              this.transport.audio(payload);
-              if (firstPacket)
-                this.init.trace.log("speech.first_audio_sent", {
-                  speechId,
-                  ms: Date.now() - began,
-                });
-            }
-          });
-          void queue.catch(() => {});
+
+  open(signal: AbortSignal, options: SpeechStreamOptions = {}): SpeechStream {
+    return new SpeechStream(
+      {
+        voiceId: this.init.agent.voiceId,
+        voice: this.init.agent.voice,
+        format: this.init.outputAudioFormat,
+        bytesPerSecond: this.bytesPerSecond,
+        transport: this.transport,
+        trace: this.init.trace,
+        synthesize: this.synthesize,
+        drain: (s, timeoutMs) => this.drain(s, timeoutMs),
+        clearIfSent: (sent) => {
+          if (sent) this.clear();
         },
-        this.init.agent.voice,
-        this.init.outputAudioFormat,
-        {
-          log: (event, detail = {}) =>
-            this.init.trace.log(event, { ...detail, speechId }),
-        },
-      );
-      await synth.push(text);
-      await synth.end();
-      await queue;
-      if (audioLimitExceeded)
-        throw new Error("Synthesized utterance exceeded three minutes.");
-      if (!signal.aborted && !audioBytes)
-        throw new Error("Speech generation returned no audio.");
-      if (!signal.aborted && audioBytes)
-        await this.drain(
-          signal,
-          (audioBytes * 1000) / this.bytesPerSecond + 15000,
-        );
-    } catch (error) {
-      this.init.trace.log(
-        signal.aborted ? "speech.cancelled" : "speech.failed",
-        { speechId, ...errorDetail(error), bytes: audioBytes },
-      );
-      stopped = true;
-      this.clear();
-      throw error;
-    } finally {
-      signal.removeEventListener("abort", abort);
-      synth?.close();
-      this.active = false;
-    }
+        streamOpened: () => void this.activeStreams++,
+        streamClosed: () => void (this.activeStreams = Math.max(0, this.activeStreams - 1)),
+      },
+      signal,
+      options,
+    );
   }
+
+  cacheKey(text: string): string {
+    const { voiceId, voice } = this.init.agent;
+    const format = this.init.outputAudioFormat;
+    return createHash("sha256")
+      .update(
+        JSON.stringify([voiceId, voice, format?.encoding, format?.sampleRate, text]),
+      )
+      .digest("hex");
+  }
+
+  async speak(
+    text: string,
+    signal: AbortSignal,
+    waitMs = 0,
+    cache = false,
+  ): Promise<void> {
+    if (!text.trim() || signal.aborted) return;
+    const stream = this.open(signal, {
+      floorMs: waitMs,
+      cacheKey: cache ? this.cacheKey(text) : undefined,
+    });
+    stream.write(text);
+    await stream.finish();
+  }
+
   async play(audio: Buffer, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    this.active = true;
+    this.activeStreams++;
     try {
-      // Twilio buffers these 20 ms frames and acknowledges when playback finishes.
       for (let i = 0; i < audio.length; i += 160) {
         signal.throwIfAborted();
         this.transport.audio(audio.subarray(i, i + 160).toString("base64"));
@@ -139,9 +349,10 @@ export class SpeechOutput {
         (audio.length * 1000) / this.bytesPerSecond + 10000,
       );
     } finally {
-      this.active = false;
+      this.activeStreams = Math.max(0, this.activeStreams - 1);
     }
   }
+
   private drain(signal: AbortSignal, timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);

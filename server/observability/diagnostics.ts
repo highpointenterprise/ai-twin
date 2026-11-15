@@ -6,6 +6,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { appendFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { env } from "../../lib/env";
 import type { TraceEvent } from "../../lib/types";
@@ -15,15 +16,27 @@ export interface DiagnosticEvent extends TraceEvent {
 }
 const sensitiveKey =
   /token|secret|password|authorization|api.?key|cookie|signature|payload|raw.?audio/i;
-export function redactText(value: string): string {
-  let text = value;
+const SECRET_TTL_MS = 30_000;
+let secretCache: { at: number; values: string[] } | undefined;
+const secretValues = (): string[] => {
+  const now = Date.now();
+  if (secretCache && now - secretCache.at < SECRET_TTL_MS)
+    return secretCache.values;
+  const values = new Set<string>();
   for (const [key, secret] of Object.entries({ ...process.env, ...env }))
     if (
       sensitiveKey.test(key) &&
       typeof secret === "string" &&
       secret.length >= 4
     )
-      text = text.split(secret).join("[redacted]");
+      values.add(secret);
+  secretCache = { at: now, values: [...values].sort((a, b) => b.length - a.length) };
+  return secretCache.values;
+};
+export function redactText(value: string): string {
+  let text = value;
+  for (const secret of secretValues())
+    if (text.includes(secret)) text = text.split(secret).join("[redacted]");
   return text
     .replace(/\b(Bearer|Basic|Token)\s+[A-Za-z0-9_+./=-]+/gi, "$1 [redacted]")
     .replace(
@@ -72,9 +85,13 @@ export class DiagnosticLog {
   private entries: DiagnosticEvent[] = [];
   private size = 0;
   private writable = true;
+  private buffer: string[] = [];
+  private timer?: NodeJS.Timeout;
+  private flushing = false;
   constructor(
     readonly path?: string,
     private readonly maxBytes = 5 * 1024 * 1024,
+    private readonly flushIntervalMs = 50,
   ) {
     if (!path) return;
     try {
@@ -112,24 +129,71 @@ export class DiagnosticLog {
     this.entries.push(entry);
     if (this.entries.length > 2000) this.entries.shift();
     if (!this.path || !this.writable) return;
+    const line = JSON.stringify(entry) + "\n";
+    if (this.flushIntervalMs <= 0) {
+      this.buffer.push(line);
+      this.flushSync();
+      return;
+    }
+    this.buffer.push(line);
+    this.timer ??= setTimeout(() => void this.flush(), this.flushIntervalMs);
+    this.timer.unref();
+  }
+  private async flush(): Promise<void> {
+    this.timer = undefined;
+    if (this.flushing || !this.buffer.length || !this.path || !this.writable)
+      return;
+    this.flushing = true;
+    const chunk = this.buffer.join("");
+    this.buffer = [];
+    const bytes = Buffer.byteLength(chunk);
     try {
-      const line = JSON.stringify(entry) + "\n",
-        bytes = Buffer.byteLength(line);
       if (this.size + bytes > this.maxBytes) {
-        rmSync(`${this.path}.2`, { force: true });
-        try {
-          renameSync(`${this.path}.1`, `${this.path}.2`);
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-        }
-        try {
-          renameSync(this.path, `${this.path}.1`);
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-        }
+        await rm(`${this.path}.2`, { force: true });
+        for (const [from, to] of [
+          [`${this.path}.1`, `${this.path}.2`],
+          [this.path, `${this.path}.1`],
+        ])
+          await rename(from, to).catch((e: NodeJS.ErrnoException) => {
+            if (e.code !== "ENOENT") throw e;
+          });
         this.size = 0;
       }
-      appendFileSync(this.path, line, { mode: 0o600 });
+      await appendFile(this.path, chunk, { mode: 0o600 });
+      this.size += bytes;
+    } catch {
+      this.writable = false;
+      console.error(
+        "diagnostics.write_failed: file logging stopped; console and in-memory logs remain available",
+      );
+    } finally {
+      this.flushing = false;
+      if (this.buffer.length)
+        this.timer ??= setTimeout(() => void this.flush(), this.flushIntervalMs);
+    }
+  }
+  flushSync(): void {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    if (!this.path || !this.writable || !this.buffer.length) return;
+    const chunk = this.buffer.join("");
+    this.buffer = [];
+    const bytes = Buffer.byteLength(chunk);
+    try {
+      if (this.size + bytes > this.maxBytes) {
+        rmSync(`${this.path}.2`, { force: true });
+        for (const [from, to] of [
+          [`${this.path}.1`, `${this.path}.2`],
+          [this.path, `${this.path}.1`],
+        ])
+          try {
+            renameSync(from, to);
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+          }
+        this.size = 0;
+      }
+      appendFileSync(this.path, chunk, { mode: 0o600 });
       this.size += bytes;
     } catch {
       this.writable = false;
@@ -147,6 +211,7 @@ export class DiagnosticLog {
 let log = new DiagnosticLog();
 export function configureDiagnostics(path: string): void {
   log = new DiagnosticLog(path);
+  process.once("exit", () => log.flushSync());
 }
 export function diagnosticEvents(
   scope?: string,

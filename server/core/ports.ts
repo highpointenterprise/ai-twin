@@ -1,6 +1,7 @@
 import type { ToolConfig } from "../../lib/config";
 import type { AgentConfig } from "../../lib/types";
 import type { CallTrace } from "../observability/trace";
+import type { LlmUsage, UsageMeter } from "../billing/meter";
 
 export interface AudioFormat {
   encoding: "mulaw" | "pcm_s16le";
@@ -20,7 +21,7 @@ export interface TranscriberEvents {
   onEnd: (text: string) => void;
   onError: (error: Error) => void;
 }
-export type ProviderTrace = Pick<CallTrace, "log">;
+export type ProviderTrace = Pick<CallTrace, "log"> & { usage?: UsageMeter };
 
 export interface Transcriber {
   sendAudio: (chunk: Buffer) => void;
@@ -93,8 +94,8 @@ export interface ModelRequest {
   tools?: ModelTool[];
   model: string;
   temperature: number;
+  trace?: ProviderTrace;
 }
-
 export interface LanguageModel {
   stream: (
     request: ModelRequest,
@@ -159,6 +160,11 @@ export interface Telephony {
     statusUrl: string,
   ) => Promise<void>;
   endCall: (sid: string) => Promise<void>;
+  getCallUsage: (sid: string) => Promise<{
+  duration: string | null;
+  price: string | null;
+  priceUnit: string | null;
+}>;
   validateWebhook: (
     url: string,
     params: Record<string, string>,

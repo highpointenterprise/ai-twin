@@ -63,3 +63,8 @@ export function dtmfAudio(
   }
   return Buffer.concat(chunks);
 }
+
+export const base64ByteLength = (payload: string): number => {
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return (payload.length * 3) / 4 - padding;
+};

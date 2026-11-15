@@ -3,6 +3,7 @@ import type {
   TraceEvent,
   TranscriptLine,
 } from "../../lib/types";
+import { UsageMeter } from "../billing/meter";
 import { safeDetail, writeDiagnostic } from "./diagnostics";
 
 type Detail = TraceEvent["detail"];
@@ -20,6 +21,7 @@ export class CallTrace {
   private readonly latencies: number[] = [];
   private readonly startedAt = Date.now();
   private finished = false;
+  readonly usage = new UsageMeter();
 
   constructor(private readonly sid: string) {}
 

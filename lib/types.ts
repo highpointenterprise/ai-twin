@@ -13,6 +13,26 @@ export type CallStatus =
   | "completed"
   | "failed";
 
+export interface CostLine {
+  provider: "twilio" | "deepgram" | "elevenlabs" | "openai" | "hosting";
+  item: string;
+  quantity: number;
+  unit: string;
+  rate: number;
+  usd: number;
+  note?: string;
+}
+export interface CallCost {
+  currency: "USD";
+  durationSec: number;
+  lines: CostLine[];
+  servicesUsd: number;
+  hostingUsd: number;
+  totalUsd: number;
+  estimated: boolean;
+  warnings: string[];
+}
+
 export interface CallRecord {
   sid: string;
   agentId: string;
@@ -28,6 +48,7 @@ export interface CallRecord {
   transferId?: string;
   operatorCallSid?: string;
   parentCallSid?: string;
+  cost?: CallCost;
 }
 
 export interface PhoneNumberView {

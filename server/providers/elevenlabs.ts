@@ -53,7 +53,8 @@ export const elevenLabsSynthesizerFactory =
       closed = false,
       endRequested = false,
       audioBytes = 0,
-      packets = 0;
+      packets = 0,
+      totalCharacters = 0;
     const ready = new Promise<void>((r, j) => {
         readyResolve = r;
         readyReject = j;
@@ -98,6 +99,7 @@ export const elevenLabsSynthesizerFactory =
         via,
         bytes: audioBytes,
         packets,
+        characters: totalCharacters,
         ms: Date.now() - began,
       });
       doneResolve();
@@ -190,11 +192,16 @@ export const elevenLabsSynthesizerFactory =
     return {
       push: async (text) => {
         await ready;
+        totalCharacters += text.length;
         if (closed) throw new Error("Synthesis cancelled.");
         if (socket.readyState !== WebSocket.OPEN)
           throw new Error("ElevenLabs socket closed before text was sent.");
         socket.send(JSON.stringify({ text: `${text} `, flush: true }));
-        log("tts.text_sent", { characters: text.length });
+        trace?.usage?.addTts(config.model, text.length);
+        log("tts.text_sent", {
+          characters: text.length,
+          total_characters: totalCharacters,
+        });
       },
       end: async () => {
         await ready;

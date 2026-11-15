@@ -9,6 +9,7 @@ export const transcriberSchema = z.object({
     .enum(["flux-general-en", "flux-general-multi"])
     .default("flux-general-en"),
   eotThreshold: z.number().min(0.5).max(0.9).default(0.7),
+  eagerEotThreshold: z.number().min(0.3).max(0.9).nullable().default(0.4),
   eotTimeoutMs: z.number().int().min(500).max(10000).default(5000),
 });
 export const voiceSchema = z.object({
@@ -21,7 +22,7 @@ export const voiceSchema = z.object({
   speed: z.number().min(0.7).max(1.2).default(1),
 });
 export const startSpeakingSchema = z.object({
-  waitSeconds: z.number().min(0).max(5).default(0.4),
+  waitSeconds: z.number().min(0).max(5).default(0),
   smartEndpointingProvider: z.literal("deepgram-flux").default("deepgram-flux"),
 });
 export const stopSpeakingSchema = z.object({
@@ -81,7 +82,7 @@ export const assistantSchema = z
     mode: z.literal("standard").default("standard"),
     voiceId: z.string().trim().max(128).default(""),
     realtimeVoice: z.string().default("marin"),
-    model: z.string().trim().min(1).max(64).default("gpt-4.1"),
+    model: z.string().trim().min(1).max(128).default("gpt-4.1"),
     temperature: z.number().min(0).max(1.2).default(0.7),
     transcriber: transcriberSchema.default({}),
     voice: voiceSchema.default({}),

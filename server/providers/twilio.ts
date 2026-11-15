@@ -117,6 +117,15 @@ export const createTwilioTelephony = (
         client().calls(sid).update({ status: "completed" }),
       );
     },
+    getCallUsage: async (sid) => {
+      const call = await client().calls(sid).fetch();
+
+      return {
+        duration: call.duration ?? null,
+        price: call.price ?? null,
+        priceUnit: call.priceUnit ?? null,
+      };
+    },
     validateWebhook: (url, params, signature) => {
       const { authToken } = credentials();
       return (

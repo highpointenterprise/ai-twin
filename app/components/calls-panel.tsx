@@ -168,6 +168,7 @@ export function CallsPanel({
                   <th>Customer</th>
                   <th>Status</th>
                   <th>Outcome</th>
+                  <th>Cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -191,6 +192,7 @@ export function CallsPanel({
                     <td>{c.direction === "outbound" ? c.to : c.from}</td>
                     <td>{c.status}</td>
                     <td>{c.endedReason ?? c.answeredBy ?? "—"}</td>
+                    <td>{c.cost ? `$${c.cost.totalUsd.toFixed(3)}` : "—"}</td>
                   </tr>
                 ))}
               </tbody>

@@ -33,6 +33,7 @@ export class CallRegistry {
         | "transferId"
         | "operatorCallSid"
         | "parentCallSid"
+        | "cost"
       >
     >,
   ): void {

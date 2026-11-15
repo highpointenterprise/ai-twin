@@ -340,15 +340,16 @@ export function ToolEditor({
                 Description · model chooses the destination
               </option>
               <option value="phrase">
-                Transfer phrase · caller phrase triggers routing
+               Transfer phrase · transfers as soon as the agent says it
               </option>
             </select>
           </label>
           <p className="hint">
             The transfer message finishes before dialing. Both warm and blind
-            modes support description or phrase routing. Phrase mode matches a
-            complete phrase within the caller's final transcript, ignoring
-            punctuation and case.
+            modes support description or phrase routing. Description mode: the
+            model picks the destination, then says the message. Phrase mode:
+            the agent is told the phrase, and the call transfers right after
+            the agent says it (punctuation and case are ignored).
           </p>
           {tool.destinations.map((d, i) => (
             <fieldset key={i}>
@@ -370,7 +371,7 @@ export function ToolEditor({
                       id: "Destination ID",
                       number: "Phone number",
                       description: "When to transfer here",
-                      transferPhrase: "Caller transfer phrase",
+                      transferPhrase: "Agent transfer phrase",
                       message: "Message before transfer (empty = silent)",
                       extension: "Extension / post-answer digits",
                     }[key]

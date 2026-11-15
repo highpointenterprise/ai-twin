@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import { parseJson } from "../../lib/json";
+import { base64ByteLength } from "../speech/audio";
 import { verifyStreamToken } from "../../lib/token";
 import type { ConversationSession, SessionFactory } from "../core/ports";
 import type { SessionPool } from "../engine/pool";
@@ -158,7 +159,7 @@ export function attachMediaServer(
               });
               if (event.event === "media" && event.media?.payload) {
                 outPackets++;
-                outBytes += Buffer.from(event.media.payload, "base64").length;
+                outBytes += base64ByteLength(event.media.payload);
                 if (outPackets === 1)
                   log("media.first_outbound_audio", { bytes: outBytes });
               } else
@@ -178,7 +179,7 @@ export function attachMediaServer(
           typeof data.media?.payload === "string"
         ) {
           inPackets++;
-          inBytes += Buffer.from(data.media.payload, "base64").length;
+          inBytes += base64ByteLength(data.media.payload);
           if (inPackets === 1 || Date.now() - lastAudioLog >= 5000) {
             lastAudioLog = Date.now();
             log("media.audio_progress", {
@@ -208,6 +209,7 @@ export function attachMediaServer(
       }
     });
     socket.on("close", (code, reason) => {
+      if (sid) deps.traces.for(sid).usage.addNetwork(inBytes, outBytes);
       log("media.socket_closed", {
         code,
         reason: redactText(reason.toString()).slice(0, 300),

@@ -2,6 +2,7 @@ import { warmTransferRoutes } from "../transfers/routes";
 import { meetingRoutes } from "../meetings/routes";
 import type { MeetingService } from "../meetings/service";
 import type { WarmTransferCoordinator } from "../transfers/coordinator";
+import type { CostTracker } from "../billing/tracker";
 import { randomUUID } from "node:crypto";
 import express, {
   type Express,
@@ -51,6 +52,7 @@ export interface HttpDeps {
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
   meetings?: MeetingService;
+  costs?: CostTracker;
 }
 const statusMap: Record<string, CallStatus> = {
   queued: "initiating",
@@ -193,20 +195,18 @@ export const createAdminApp = (d: HttpDeps): Express => {
         publicBaseUrl: env.PUBLIC_BASE_URL,
         inboundUrl: `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
         mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
-        assistants: store
-          .list()
-          .map((a) => ({
-            id: a.id,
-            name: a.name,
-            voiceConfigured: !!effectiveAssistant(a).voiceId,
-            voiceSource: a.voiceId
-              ? "assistant"
-              : env.ELEVENLABS_VOICE_ID
-                ? "server default"
-                : "missing",
-            assignedNumber: store.numberForAgent(a.id) ?? null,
-            firstMessageMode: a.firstMessageMode,
-          })),
+        assistants: store.list().map((a) => ({
+          id: a.id,
+          name: a.name,
+          voiceConfigured: !!effectiveAssistant(a).voiceId,
+          voiceSource: a.voiceId
+            ? "assistant"
+            : env.ELEVENLABS_VOICE_ID
+              ? "server default"
+              : "missing",
+          assignedNumber: store.numberForAgent(a.id) ?? null,
+          firstMessageMode: a.firstMessageMode,
+        })),
       },
       events: diagnosticEvents(
         typeof req.query.callSid === "string" ? req.query.callSid : undefined,
@@ -507,23 +507,20 @@ export const createPublicApp = (d: HttpDeps): Express => {
     To: z.string().default(""),
     AnsweredBy: z.string().default(""),
     CallStatus: z.string().optional(),
+    CallDuration: z.string().optional(),
   });
   const stream = (agentId: string, callId: string) => {
     const sid = contexts.get(callId)?.sid;
     if (sid) {
-      traces
-        .for(sid)
-        .log("media.awaiting_connection", {
-          callId,
-          mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
-        });
+      traces.for(sid).log("media.awaiting_connection", {
+        callId,
+        mediaUrl: `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
+      });
       setTimeout(() => {
         if (contexts.get(callId))
-          traces
-            .for(sid)
-            .log("media.start_timeout", {
-              hint: "Twilio has not started /media. Check ngrok inspection, HTTPS/WSS reachability and Twilio stream errors; keep one backend process.",
-            });
+          traces.for(sid).log("media.start_timeout", {
+            hint: "Twilio has not started /media. Check ngrok inspection, HTTPS/WSS reachability and Twilio stream errors; keep one backend process.",
+          });
       }, 15000).unref();
     }
     return telephony.streamTwiml(
@@ -553,19 +550,17 @@ export const createPublicApp = (d: HttpDeps): Express => {
               ? "voice-id-missing"
               : "";
       if (reason) {
-        traces
-          .for(b.CallSid)
-          .log("inbound.rejected", {
-            reason,
-            missing: missing.join(", "),
-            agentId: agent?.id ?? "",
-            hint:
-              reason === "no-agent-assigned"
-                ? "Assign this number to an assistant in Phone numbers."
-                : reason === "voice-id-missing"
-                  ? "Set an assistant voice ID or ELEVENLABS_VOICE_ID."
-                  : "Check Diagnostics configuration and the backend log.",
-          });
+        traces.for(b.CallSid).log("inbound.rejected", {
+          reason,
+          missing: missing.join(", "),
+          agentId: agent?.id ?? "",
+          hint:
+            reason === "no-agent-assigned"
+              ? "Assign this number to an assistant in Phone numbers."
+              : reason === "voice-id-missing"
+                ? "Set an assistant voice ID or ELEVENLABS_VOICE_ID."
+                : "Check Diagnostics configuration and the backend log.",
+        });
         registry.create({
           sid: b.CallSid,
           agentId: agent?.id ?? "",
@@ -582,13 +577,11 @@ export const createPublicApp = (d: HttpDeps): Express => {
         );
       }
       if (!agent) throw new HttpError(404, "Assigned assistant not found.");
-      traces
-        .for(b.CallSid)
-        .log("inbound.accepted", {
-          agentId: agent.id,
-          voiceId: agent.voiceId,
-          firstMessageMode: agent.firstMessageMode,
-        });
+      traces.for(b.CallSid).log("inbound.accepted", {
+        agentId: agent.id,
+        voiceId: agent.voiceId,
+        firstMessageMode: agent.firstMessageMode,
+      });
       const callId = randomUUID();
       contexts.set(callId, {
         agent,
@@ -628,13 +621,11 @@ export const createPublicApp = (d: HttpDeps): Express => {
         !verifyStreamToken(q.agentId, q.callId, q.token) ||
         !contexts.bind(q.callId, b.CallSid)
       ) {
-        traces
-          .for(b.CallSid)
-          .log("outbound.context_rejected", {
-            contextPresent: !!context,
-            agentMatches: context?.agent.id === q.agentId,
-            hint: "Keep one backend process and do not restart between call creation and media connection.",
-          });
+        traces.for(b.CallSid).log("outbound.context_rejected", {
+          contextPresent: !!context,
+          agentMatches: context?.agent.id === q.agentId,
+          hint: "Keep one backend process and do not restart between call creation and media connection.",
+        });
         throw new HttpError(403, "Invalid call context.");
       }
       if (!registry.get(b.CallSid))
@@ -681,13 +672,11 @@ export const createPublicApp = (d: HttpDeps): Express => {
           StreamError: z.string().optional(),
         })
         .parse(req.body);
-      traces
-        .for(b.CallSid)
-        .log("twilio.stream_status", {
-          streamSid: b.StreamSid ?? "",
-          event: b.StreamEvent,
-          message: b.StreamError ?? "",
-        });
+      traces.for(b.CallSid).log("twilio.stream_status", {
+        streamSid: b.StreamSid ?? "",
+        event: b.StreamEvent,
+        message: b.StreamError ?? "",
+      });
       if (b.StreamEvent === "stream-error")
         registry.patch(b.CallSid, {
           endedReason: `media-stream-error: ${b.StreamError ?? "Check Twilio stream diagnostics."}`,
@@ -698,7 +687,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
   app.post(
     "/twilio/status",
     verified,
-    handle((req, res) => {
+    handle(async (req, res) => {
       const b = bodySchema.parse(req.body),
         status = b.CallStatus ? statusMap[b.CallStatus] : undefined;
       if (!registry.get(b.CallSid) && typeof req.query.callId === "string") {
@@ -716,22 +705,42 @@ export const createPublicApp = (d: HttpDeps): Express => {
       if (status) registry.update(b.CallSid, status);
       if (status === "failed")
         registry.patch(b.CallSid, { endedReason: b.CallStatus });
-      traces
-        .for(b.CallSid)
-        .log("twilio.status", {
-          status: b.CallStatus ?? "unknown",
-          errorCode:
-            typeof req.body.ErrorCode === "string" ? req.body.ErrorCode : "",
-          errorMessage:
-            typeof req.body.ErrorMessage === "string"
-              ? req.body.ErrorMessage
-              : "",
-        });
+      traces.for(b.CallSid).log("twilio.status", {
+        status: b.CallStatus ?? "unknown",
+        errorCode:
+          typeof req.body.ErrorCode === "string" ? req.body.ErrorCode : "",
+        errorMessage:
+          typeof req.body.ErrorMessage === "string"
+            ? req.body.ErrorMessage
+            : "",
+      });
       if (status === "completed" || status === "failed") {
+        if (status === "completed") {
+          try {
+            const usage = await d.telephony.getCallUsage(b.CallSid);
+
+            traces.for(b.CallSid).log("twilio.usage", {
+              duration_seconds: Number(usage.duration ?? b.CallDuration ?? 0),
+              price: usage.price ?? "pending",
+              price_unit: usage.priceUnit ?? "unknown",
+            });
+          } catch (error) {
+            traces.for(b.CallSid).log("twilio.usage_error", {
+              message: error instanceof Error ? error.message : "Unknown error",
+            });
+          }
+        }
         const contextId = contexts.idForSid(b.CallSid);
         if (contextId) contexts.delete(contextId);
         void d.warmTransfers?.callerEnded(b.CallSid);
         traces.for(b.CallSid).finish();
+        const secs =
+          req.body.CallDuration !== undefined
+            ? Number(req.body.CallDuration)
+            : status === "failed"
+              ? 0
+              : undefined;
+        d.costs?.finalize(b.CallSid, secs);
         if (typeof req.query.callId === "string")
           contexts.delete(req.query.callId);
       }

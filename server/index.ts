@@ -11,6 +11,8 @@ import { createAdminApp, createPublicApp, type HttpDeps } from "./http/routes";
 import { logEvent, TraceStore } from "./observability/trace";
 import { configureDiagnostics } from "./observability/diagnostics";
 import { createDeepgramTranscriber } from "./providers/deepgram";
+import { CostTracker } from "./billing/tracker";
+import { loadRates } from "./billing/pricing";
 import {
   createElevenLabsSynthesizer,
   listElevenLabsVoices,
@@ -92,6 +94,19 @@ const meetings = new MeetingService({
   avatars: createLiveAvatar,
   traces: new TraceStore(),
 });
+const costs = new CostTracker({
+  traces,
+  registry,
+  rates: () => loadRates(join(env.DATA_DIR, "pricing.json")),
+  hosting: {
+    monthlyUsd: env.HOSTING_MONTHLY_USD,
+    expectedMinutesPerMonth: env.HOSTING_EXPECTED_MINUTES_PER_MONTH,
+    egressUsdPerGb: env.HOSTING_EGRESS_USD_PER_GB,
+  },
+  ledgerPath: join(env.DATA_DIR, "costs.jsonl"),
+  amdEnabled: (id) => store.find(id)?.voicemailDetection.enabled ?? false,
+});
+
 const deps: HttpDeps = {
   store,
   registry,
@@ -105,6 +120,7 @@ const deps: HttpDeps = {
   warmTransfers,
   twilioSettings,
   meetings,
+    costs,
 };
 const publicServer = createServer(createPublicApp(deps));
 const media = attachMediaServer(publicServer, {

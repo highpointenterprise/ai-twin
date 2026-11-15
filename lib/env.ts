@@ -6,7 +6,22 @@ const schema = z.object({
   TWILIO_PHONE_NUMBER: z.string().optional(),
   DEEPGRAM_API_KEY: z.string().default(""),
   OPENAI_API_KEY: z.string().default(""),
+  OPENROUTER_API_KEY: z.string().default(""),
+  GROQ_API_KEY: z.string().default(""),
+  CEREBRAS_API_KEY: z.string().default(""),
+  TOGETHER_API_KEY: z.string().default(""),
+  CUSTOM_LLM_BASE_URL: z
+    .string()
+    .default("")
+    .refine(
+      (v) => !v || /^https:\/\/[^/@\s]+(\/.*)?$/.test(v),
+      "CUSTOM_LLM_BASE_URL must be an https URL without credentials.",
+    ),
+  CUSTOM_LLM_API_KEY: z.string().default(""),
   OPENAI_MODEL: z.string().default("gpt-4.1"),
+  OPENAI_REASONING_EFFORT: z
+    .enum(["none", "minimal", "low", "medium", "high"])
+    .default("none"),
   OPENAI_REALTIME_MODEL: z.string().default("gpt-realtime-2"),
   OPENAI_SUMMARY_MODEL: z.string().default("gpt-4.1-mini"),
   ELEVENLABS_API_KEY: z.string().default(""),
@@ -29,6 +44,12 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  HOSTING_MONTHLY_USD: z.coerce.number().min(0).default(0),
+  HOSTING_EXPECTED_MINUTES_PER_MONTH: z.coerce
+    .number()
+    .positive()
+    .default(10000),
+  HOSTING_EGRESS_USD_PER_GB: z.coerce.number().min(0).default(0),
   MAX_CONCURRENT_MEETINGS: z.coerce.number().int().min(1).max(10).default(2),
 });
 export const env = schema.parse(process.env);

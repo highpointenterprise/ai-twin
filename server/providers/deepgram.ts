@@ -34,15 +34,24 @@ export const deepgramTranscriberFactory =
       eot_threshold: String(config.eotThreshold),
       eot_timeout_ms: String(config.eotTimeoutMs),
     });
+    if (typeof config.eagerEotThreshold === "number")
+      query.set(
+        "eager_eot_threshold",
+        String(Math.min(config.eagerEotThreshold, config.eotThreshold)),
+      );
     const socket = connect(`wss://api.deepgram.com/v2/listen?${query}`, {
       headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` },
       agent: providerAgent(),
       handshakeTimeout: 10000,
     });
+    const bytesPerSecond =
+      format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
+    let reported = false;
     let closed = false;
     let failed = false,
       packets = 0,
       bytes = 0,
+      audioSeconds = 0,
       lastReport = 0;
     const fail = (error: Error) => {
       if (closed || failed) return;
@@ -80,7 +89,11 @@ export const deepgramTranscriberFactory =
       }
       if (d?.type !== "TurnInfo") return;
       const text = d.transcript?.trim() ?? "";
-      log("stt.event", { type: d.event ?? "unknown", characters: text.length });
+      if (d.event !== "Update")
+        log("stt.event", {
+          type: d.event ?? "unknown",
+          characters: text.length,
+        });
       switch (d.event) {
         case "StartOfTurn":
           events.onSpeechStart();
@@ -101,11 +114,17 @@ export const deepgramTranscriberFactory =
     });
     socket.on("error", fail);
     socket.on("close", (code, reason) => {
+      if (!reported) {
+        reported = true;
+        trace?.usage?.addStt(config.model, bytes / bytesPerSecond);
+      }
       log("stt.closed", {
         code,
         reason: redactText(reason.toString()).slice(0, 300),
         packets,
         bytes,
+        audio_seconds: Number(audioSeconds.toFixed(3)),
+        audio_minutes: Number((audioSeconds / 60).toFixed(4)),
         cancelled: closed,
       });
       if (!closed)
@@ -120,6 +139,11 @@ export const deepgramTranscriberFactory =
         if (closed) return;
         packets++;
         bytes += chunk.length;
+
+        const bytesPerSecond =
+          format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
+
+        audioSeconds += chunk.length / bytesPerSecond;
         if (packets === 1 || Date.now() - lastReport >= 5000) {
           lastReport = Date.now();
           log("stt.audio", {
