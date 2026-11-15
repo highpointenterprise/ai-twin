@@ -1,5 +1,5 @@
-import { errorDetail } from "./observability/diagnostics";
 import "dotenv/config";
+import { errorDetail } from "./observability/diagnostics";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { env, missingCallConfiguration } from "../lib/env";

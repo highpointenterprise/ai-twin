@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { z } from "zod";
 import type { TwilioCredentials } from "./twilio";
 const schema = z.object({
