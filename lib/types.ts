@@ -13,13 +13,45 @@ export type CallStatus =
   | "completed"
   | "failed";
 
+export interface LlmUsageTotals {
+  provider: string;
+  model: string;
+  requests: number;
+  estimatedRequests: number;
+  prompt: number;
+  cached: number;
+  completion: number;
+  reasoning: number;
+  inputAudio: number;
+  cachedAudio: number;
+  outputAudio: number;
+}
+export interface TelephonyUsage {
+  callSid: string;
+  durationSeconds: number;
+  price: number | null;
+  currency: string | null;
+  source: "provider" | "callback";
+}
+export interface CallUsage {
+  unmetered?: { provider: string; model: string; reason: string }[];
+  llm: LlmUsageTotals[];
+  transcriber: { provider: string; model: string; audioSeconds: number; source: "submitted-audio" }[];
+  voice: { provider: string; model: string; characters: number; source: "submitted-text" }[];
+  telephony: TelephonyUsage[];
+  network: { receivedBytes: number; sentBytes: number };
+}
 export interface CostLine {
-  provider: "twilio" | "deepgram" | "elevenlabs" | "openai" | "hosting";
+  provider: string;
+  type?: "model" | "transcriber" | "voice" | "transport" | "hosting";
+  model?: string;
   item: string;
   quantity: number;
   unit: string;
-  rate: number;
-  usd: number;
+  rate: number | null;
+  usd: number | null;
+  source?: "provider" | "rate-card" | "unpriced";
+  estimated?: boolean;
   note?: string;
 }
 export interface CallCost {
@@ -28,7 +60,22 @@ export interface CallCost {
   lines: CostLine[];
   servicesUsd: number;
   hostingUsd: number;
+  /** Known subtotal only when status is incomplete. */
   totalUsd: number;
+  knownSubtotalUsd?: number;
+  status?: "estimated" | "incomplete" | "final";
+  calculatedAt?: string;
+  pricingVersion?: string;
+  reconciliationStatus?: "pending" | "complete";
+  relatedCalls?: { callId: string; totalUsd: number | null; status: string }[];
+  totalWithRelatedUsd?: number;
+  usage?: CallUsage;
+  costBreakdown?: {
+    llm: number; stt: number; tts: number; transport: number; hosting: number; total: number;
+    llmPromptTokens: number; llmCompletionTokens: number; llmCachedPromptTokens: number;
+    llmInputAudioTokens: number; llmOutputAudioTokens: number; ttsCharacters: number;
+    transcriberSeconds: number;
+  };
   estimated: boolean;
   warnings: string[];
 }

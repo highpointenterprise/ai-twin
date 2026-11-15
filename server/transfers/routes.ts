@@ -24,13 +24,14 @@ export function warmTransferRoutes(
       .set("Cache-Control", "public, max-age=86400")
       .send(audio),
   );
-  router.post("/twilio/warm/:id/:action", verified, (req, res, next) => {
+  router.post("/twilio/warm/:id/:action", verified, async (req, res, next) => {
     try {
       const r = service.get(req.params.id),
         action = req.params.action;
       res.type("text/xml");
-      const stream = (contextId: string, extension = "") => {
-        const context = contexts.get(contextId);
+      const send = async (body: string) => { await service.flush(); res.send(body); };
+      const stream = async (contextId: string, extension = "") => {
+        const context = await contexts.getAsync(contextId);
         if (!context) return "<Response><Hangup/></Response>";
         const response = new twilio.twiml.VoiceResponse();
         if (extension) response.play({ digits: extension });
@@ -47,11 +48,11 @@ export function warmTransferRoutes(
           media.parameter({ name, value });
         return response.toString();
       };
-      const resumeOrWait = () => {
+      const resumeOrWait = async () => {
         if (
           r.phase === "returning" &&
           r.resumeContextId &&
-          contexts.get(r.resumeContextId)
+          (await contexts.getAsync(r.resumeContextId))
         )
           return stream(r.resumeContextId);
         if (["returning", "recovery-failed"].includes(r.phase)) {
@@ -82,21 +83,23 @@ export function warmTransferRoutes(
           b.CallSid,
           b.ConferenceSid,
         );
+        await service.flush();
         res.status(204).end();
         return;
       }
       const b = callSchema.parse(req.body);
       if (action === "operator-status") {
         const status = z.string().parse(req.body.CallStatus);
-        service.operatorStatus(r.id, b.CallSid, b.To, status);
+        await service.operatorStatus(r.id, b.CallSid, b.To, status);
+        await service.flush();
         res.status(204).end();
         return;
       }
       if (action === "operator") {
-        const id = service.operatorAnswered(r.id, b.CallSid, b.To);
-        res.send(
+        const id = await service.operatorAnswered(r.id, b.CallSid, b.To);
+        await send(
           id
-            ? stream(id, r.destination.extension)
+            ? await stream(id, r.destination.extension)
             : "<Response><Hangup/></Response>",
         );
         return;
@@ -108,15 +111,15 @@ export function warmTransferRoutes(
           action === "bridge" &&
           ["connecting", "connected"].includes(r.phase)
         )
-          res.send(conferenceTwiml(r, "operator"));
+          await send(conferenceTwiml(r, "operator"));
         else {
-          service.operatorStatus(
+          await service.operatorStatus(
             r.id,
             b.CallSid,
             r.destination.number,
             "completed",
           );
-          res.send("<Response><Hangup/></Response>");
+          await send("<Response><Hangup/></Response>");
         }
         return;
       }
@@ -132,18 +135,18 @@ export function warmTransferRoutes(
             "connected",
           ].includes(r.phase)
         )
-          res.send(conferenceTwiml(r, "caller"));
-        else res.send(resumeOrWait());
-      } else if (action === "wait") res.send(holdTwiml(r));
+          await send(conferenceTwiml(r, "caller"));
+        else await send(await resumeOrWait());
+      } else if (action === "wait") await send(holdTwiml(r));
       else if (action === "resume") {
-        res.send(resumeOrWait());
+        await send(await resumeOrWait());
       } else if (action === "caller-exit") {
         if (["connected", "completed", "cancelled"].includes(r.phase))
-          res.send("<Response><Hangup/></Response>");
+          await send("<Response><Hangup/></Response>");
         else {
           if (!["returning", "returned", "recovery-failed"].includes(r.phase))
             void service.rollback(r.id, "conference-ended-before-bridge");
-          res.send(resumeOrWait());
+          await send(await resumeOrWait());
         }
       } else throw new HttpError(404, "Unknown warm transfer callback.");
     } catch (e) {

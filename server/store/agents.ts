@@ -4,7 +4,25 @@ import { assistantSchema } from "../../lib/config";
 import { JsonFile } from "./persistence";
 import { HttpError } from "../core/errors";
 
-export class AgentStore {
+export type Awaitable<T> = T | Promise<T>;
+export interface ConfigPage {
+  limit?: number;
+  after?: string;
+}
+/** The production implementation reads MongoDB directly; memory stores support tests. */
+export interface AgentRepository {
+  create(input: AgentInput): Awaitable<AgentConfig>;
+  update(id: string, input: AgentInput): Awaitable<AgentConfig>;
+  get(id: string): Awaitable<AgentConfig>;
+  find(id: string): Awaitable<AgentConfig | undefined>;
+  list(page?: ConfigPage): Awaitable<AgentConfig[]>;
+  assign(phoneNumber: string, agentId: string): Awaitable<void>;
+  agentForNumber(phoneNumber: string): Awaitable<AgentConfig | undefined>;
+  numberForAgent(agentId: string): Awaitable<string | undefined>;
+  usesTool(toolId: string): Awaitable<boolean>;
+}
+
+export class AgentStore implements AgentRepository {
   private readonly agents = new Map<string, AgentConfig>();
   private readonly numberToAgent = new Map<string, string>();
 
@@ -56,8 +74,15 @@ export class AgentStore {
     return this.agents.get(id);
   }
 
-  list(): AgentConfig[] {
-    return [...this.agents.values()];
+  list(page?: ConfigPage): AgentConfig[] {
+    const values = [...this.agents.values()];
+    if (!page) return values;
+    return values.filter((agent) => !page.after || agent.id > page.after)
+      .sort((a, b) => a.id.localeCompare(b.id)).slice(0, page.limit ?? 100);
+  }
+
+  usesTool(toolId: string): boolean {
+    return this.list().some((agent) => agent.toolIds.includes(toolId));
   }
 
   assign(phoneNumber: string, agentId: string): void {

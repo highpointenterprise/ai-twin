@@ -46,7 +46,6 @@ export const deepgramTranscriberFactory =
     });
     const bytesPerSecond =
       format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
-    let reported = false;
     let closed = false;
     let failed = false,
       packets = 0,
@@ -65,7 +64,10 @@ export const deepgramTranscriberFactory =
         ms: Date.now() - began,
         bufferedPackets: pending.length,
       });
-      for (const b of pending.splice(0)) socket.send(b);
+      for (const b of pending.splice(0)) {
+        socket.send(b);
+        trace?.usage?.addStt(config.model, b.length / bytesPerSecond);
+      }
     });
     socket.on("unexpected-response", (_req, response) => {
       fail(
@@ -114,10 +116,6 @@ export const deepgramTranscriberFactory =
     });
     socket.on("error", fail);
     socket.on("close", (code, reason) => {
-      if (!reported) {
-        reported = true;
-        trace?.usage?.addStt(config.model, bytes / bytesPerSecond);
-      }
       log("stt.closed", {
         code,
         reason: redactText(reason.toString()).slice(0, 300),
@@ -153,8 +151,10 @@ export const deepgramTranscriberFactory =
             pending: pending.length,
           });
         }
-        if (socket.readyState === WebSocket.OPEN) socket.send(chunk);
-        else if (
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(chunk);
+          trace?.usage?.addStt(config.model, chunk.length / bytesPerSecond);
+        } else if (
           socket.readyState === WebSocket.CONNECTING &&
           pending.length < 250
         )

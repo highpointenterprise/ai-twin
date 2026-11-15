@@ -75,7 +75,7 @@ for (const direction of ["inbound", "outbound"] as const)
         );
       }),
     );
-    const d: HttpDeps = {
+    const d: Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } = {
       store: new AgentStore(
         agent({
           voiceId: "",

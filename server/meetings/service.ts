@@ -6,14 +6,17 @@ import {
   type MeetingRecord,
   type MeetingReadiness,
   type MeetingPhase,
+  type MeetingInput,
 } from "../../lib/meetings";
 import type {
   ConversationSession,
   EngineDeps,
   SessionFactory,
 } from "../core/ports";
-import type { AgentStore } from "../store/agents";
-import type { ToolRegistry } from "../tools/registry";
+import type { AgentRepository } from "../store/agents";
+import type { ToolRepository } from "../tools/registry";
+import type { AgentConfig } from "../../lib/types";
+import type { ToolConfig } from "../../lib/config";
 import { HttpError } from "../core/errors";
 import { StandardSession } from "../engine/standard-session";
 import { effectiveAssistant } from "../engine/settings";
@@ -43,8 +46,8 @@ export class MeetingService {
   constructor(
     private readonly deps: {
       store: MeetingStore;
-      agents: AgentStore;
-      tools: ToolRegistry;
+      agents: AgentRepository;
+      tools: ToolRepository;
       engine: EngineDeps;
       drivers: MeetingDriverFactory;
       avatars: AvatarFactory;
@@ -94,13 +97,30 @@ export class MeetingService {
     return trace.view();
   }
   join(value: unknown): MeetingRecord {
+    const input = meetingInputSchema.parse(value);
+    const agent = this.deps.agents.get(input.agentId);
+    if (agent instanceof Promise) {
+      void agent.catch(() => {});
+      throw new HttpError(503, "Use asynchronous joining with database-backed assistants.");
+    }
+    const tools = this.deps.tools.resolve(agent.toolIds);
+    if (tools instanceof Promise) {
+      void tools.catch(() => {});
+      throw new HttpError(503, "Use asynchronous joining with database-backed tools.");
+    }
+    return this.joinPrepared(input, agent, tools);
+  }
+  async joinAsync(value: unknown): Promise<MeetingRecord> {
+    const input = meetingInputSchema.parse(value);
+    const agent = await this.deps.agents.get(input.agentId);
+    const tools = await this.deps.tools.resolve(agent.toolIds);
+    return this.joinPrepared(input, agent, tools);
+  }
+  private joinPrepared(input: MeetingInput, config: AgentConfig, definitions: ToolConfig[]): MeetingRecord {
     if (this.closed)
       throw new HttpError(503, "Meeting workers are shutting down.");
-    const input = meetingInputSchema.parse(value),
-      agent = effectiveAssistant(this.deps.agents.get(input.agentId));
-    const tools = structuredClone(
-      this.deps.tools.resolve(agent.toolIds),
-    ).filter((t) => t.type === "function");
+    const agent = effectiveAssistant(config);
+    const tools = structuredClone(definitions).filter((t) => t.type === "function");
     const readiness = this.readiness(),
       missing = [...readiness.missing];
     const avatarId = input.avatarId || env.LIVEAVATAR_AVATAR_ID;

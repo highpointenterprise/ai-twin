@@ -202,7 +202,7 @@ test("backchannels don't interrupt, explicit interruption phrases do", () => {
   assert.equal(shouldInterrupt("hold on", plan), true);
   assert.equal(shouldInterrupt("I need help", plan), true);
 });
-test("custom functions validate arguments and correlate Vapi-style webhook results", async () => {
+test("custom functions validate arguments and correlate correlated webhook results", async () => {
   env.FUNCTION_ALLOWED_HOSTS = "functions.example.com";
   let requests = 0;
   const t = {

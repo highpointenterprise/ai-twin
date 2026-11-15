@@ -75,7 +75,7 @@ function setup(
   phone.validateWebhook = createTwilioTelephony(
     settings.current,
   ).validateWebhook;
-  const d: HttpDeps = {
+  const d: Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } = {
     store: new AgentStore(agent()),
     registry: new CallRegistry(),
     contexts: new ContextStore(),

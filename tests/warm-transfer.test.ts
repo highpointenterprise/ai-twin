@@ -187,7 +187,7 @@ test("warm transfer holds caller, consults privately, and confirms both conferen
     "redirect:CA-caller:hold",
     "dial",
   ]);
-  const contextId = f.answered(id)!;
+  const contextId = (await f.answered(id))!;
   assert.equal(f.contexts.get(contextId)?.purpose, "warm-consultation");
   assert.equal(f.contexts.get(contextId)?.sid, "CA-operator");
   assert.equal(f.service.get(id).phase, "consulting");
@@ -204,7 +204,7 @@ test("bridge redirect alone is not success; polling recovers a lost join callbac
   f.setAutoJoin(false);
   const id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   await f.service.accept(id, "CA-operator");
   assert.equal(f.service.get(id).phase, "connecting");
   f.setMembers(["CA-caller", "CA-operator"]);
@@ -238,7 +238,7 @@ test("rejection restores full caller context and waits for resumed media confirm
   const f = setup(t),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   await f.service.rollback(id, "declined");
   const r = f.service.get(id);
   assert.equal(r.phase, "returning");
@@ -249,7 +249,7 @@ test("rejection restores full caller context and waits for resumed media confirm
   assert.equal(resumed.history!.at(-1)?.role, "tool");
   assert.match(resumed.history!.at(-1)!.content, /declined/);
   assert.equal(resumed.deadline, f.snapshot.deadline);
-  f.service.resumed(id, "CA-caller");
+  await f.service.resumed(id, "CA-caller");
   assert.equal(r.phase, "returned");
   await f.service.rollback(id, "duplicate");
   assert.equal(r.phase, "returned");
@@ -260,7 +260,7 @@ for (const reason of ["busy", "no-answer", "failed", "canceled", "completed"])
     const f = setup(t),
       id = f.start();
     await f.dialed(id);
-    f.service.operatorStatus(id, "CA-operator", "+14155550123", reason);
+    await f.service.operatorStatus(id, "CA-operator", "+14155550123", reason);
     await until(() => !!f.service.get(id).resumeContextId);
     assert.equal(f.service.get(id).reason, `operator-${reason}`);
     assert.equal(f.operations.filter((v) => v === "dial").length, 1);
@@ -270,7 +270,7 @@ for (const reason of ["voicemail", "ivr", "unavailable", "cannot-confirm"])
     const f = setup(t),
       id = f.start();
     await f.dialed(id);
-    f.answered(id);
+    await f.answered(id);
     await f.service.rollback(id, reason);
     assert.equal(f.service.get(id).phase, "returning");
     assert.equal(f.service.get(id).reason, reason);
@@ -279,7 +279,7 @@ test("consultation and bridge timeouts initiate recovery", async (t) => {
   const f = setup(t),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   f.advance(121000);
   await f.service.checkDeadline(id);
   assert.equal(f.service.get(id).reason, "consultation-timeout");
@@ -287,7 +287,7 @@ test("consultation and bridge timeouts initiate recovery", async (t) => {
   g.setAutoJoin(false);
   const second = g.start();
   await g.dialed(second);
-  g.answered(second);
+  await g.answered(second);
   await g.service.accept(second, "CA-operator");
   g.advance(21000);
   await g.service.checkDeadline(second);
@@ -312,7 +312,7 @@ test("early failed callback before create-call response cannot resurrect a faile
   const f = setup(t);
   let id = "";
   f.tel.dialOperator = async () => {
-    f.service.operatorStatus(id, "CA-operator", "+14155550123", "busy");
+    await f.service.operatorStatus(id, "CA-operator", "+14155550123", "busy");
     return "CA-operator";
   };
   id = f.start();
@@ -324,9 +324,9 @@ test("duplicate or wrong-call callbacks cannot connect or redial a recipient", a
   const f = setup(t),
     id = f.start();
   await f.dialed(id);
-  const context = f.answered(id);
-  assert.equal(f.answered(id), context);
-  assert.throws(
+  const context = await f.answered(id);
+  assert.equal(await f.answered(id), context);
+  await assert.rejects(
     () => f.service.operatorAnswered(id, "CA-wrong", "+14155550123"),
     /Unexpected/,
   );
@@ -337,7 +337,7 @@ test("failed rollback is visible, bounded to three attempts, and supports explic
   const f = setup(t),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   const redirect = f.tel.redirectCall;
   f.tel.redirectCall = async (sid, url) => {
     if (url.endsWith("/resume")) throw new Error("Provider unavailable");
@@ -354,14 +354,14 @@ test("failed rollback is visible, bounded to three attempts, and supports explic
   f.tel.redirectCall = redirect;
   await f.service.retry(id);
   assert.equal(f.service.get(id).phase, "returning");
-  f.service.resumed(id, "CA-caller");
+  await f.service.resumed(id, "CA-caller");
   assert.equal(f.service.get(id).phase, "returned");
 });
 test("restart recovers a persisted consultation without dialing the recipient again", async (t) => {
   const f = setup(t, true),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   f.service.shutdown();
   const restarted = new WarmTransferCoordinator({
     ...f.deps,
@@ -378,7 +378,7 @@ test("connected native conference is preserved on agent restart", async (t) => {
   const f = setup(t, true),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   await f.service.accept(id, "CA-operator");
   f.service.shutdown();
   const count = f.operations.length;
@@ -415,7 +415,7 @@ test("agentic recipient conversation answers a question and only bridges after q
     "Hello, I have a caller with an order problem. Can you take the call?";
   const id = f.start();
   await f.dialed(id);
-  const contextId = f.answered(id)!;
+  const contextId = (await f.answered(id))!;
   let events!: TranscriberEvents, session!: ConversationSession;
   const spoken: string[] = [];
   const engine: EngineDeps = {
@@ -478,7 +478,7 @@ test("agentic recipient conversation answers a question and only bridges after q
   await until(() => spoken.length === 1);
   await tick();
   events.onEnd("What is the customer calling about?");
-  await until(() => spoken.length === 2);
+  await until(() => f.traces.for("CA-operator").view().transcript.some((line) => line.role === "agent" && line.text.includes("order 123")));
   await tick();
   assert.equal(f.service.get(id).phase, "consulting");
   assert.match(spoken[1], /order 123/);
@@ -494,9 +494,9 @@ test("late provider callbacks after a failed create clean up the unexpected reci
   };
   const id = f.start();
   await until(() => !!f.service.get(id).resumeContextId);
-  f.service.resumed(id, "CA-caller");
+  await f.service.resumed(id, "CA-caller");
   f.callStates.set("CA-late", "ringing");
-  f.service.operatorStatus(id, "CA-late", "+14155550123", "ringing");
+  await f.service.operatorStatus(id, "CA-late", "+14155550123", "ringing");
   await until(() => f.operations.includes("end:CA-late"));
   assert.equal(f.service.get(id).phase, "returned");
 });
@@ -504,13 +504,13 @@ test("callbacks from an older transfer cannot overwrite a newer attempt", async 
   const f = setup(t),
     old = f.start();
   await f.dialed(old);
-  f.answered(old);
+  await f.answered(old);
   await f.service.rollback(old, "declined");
-  f.service.resumed(old, "CA-caller");
+  await f.service.resumed(old, "CA-caller");
   f.tel.dialOperator = async () => "CA-new";
   const next = f.start();
   await until(() => f.service.get(next).operatorSid === "CA-new");
-  f.service.operatorStatus(old, "CA-operator", "+14155550123", "completed");
+  await f.service.operatorStatus(old, "CA-operator", "+14155550123", "completed");
   f.service.conferenceEvent(old, "participant-leave", "CA-caller", "CF-warm");
   assert.equal(f.registry.get("CA-caller")?.transferId, next);
   assert.equal(f.registry.get("CA-caller")?.transferStatus, "warm-dialing");
@@ -700,7 +700,7 @@ test("delayed hold and Dial callbacks keep the caller alive while recovery is pe
   const f = setup(t),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   const http = await publicHarness(t, f);
   let resolveStatus!: (status: string) => void;
   f.tel.callStatus = async () =>
@@ -734,7 +734,7 @@ test("ring timeout and missing caller membership recover without connecting the 
   const g = setup(t),
     second = g.start();
   await g.dialed(second);
-  g.answered(second);
+  await g.answered(second);
   g.setMembers([]);
   await g.service.accept(second, "CA-operator");
   assert.equal(g.service.get(second).reason, "bridge-failed");
@@ -794,7 +794,7 @@ test("restart status-query failure cannot turn a connected human conference into
   const f = setup(t, true),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   await f.service.accept(id, "CA-operator");
   f.service.shutdown();
   f.tel.callStatus = async () => {
@@ -816,7 +816,7 @@ test("restart restores both live call records for a connected native conference"
   const f = setup(t, true),
     id = f.start();
   await f.dialed(id);
-  f.answered(id);
+  await f.answered(id);
   await f.service.accept(id, "CA-operator");
   f.service.shutdown();
   const registry = new CallRegistry(join(f.dir!, "calls.json"));
@@ -830,4 +830,50 @@ test("restart restores both live call records for a connected native conference"
   assert.equal(registry.get("CA-caller")?.status, "in-progress");
   assert.equal(registry.get("CA-operator")?.status, "in-progress");
   assert.equal(registry.activeCount, 2);
+});
+
+test("warm transfer persists preparation before dialing and retries snapshots in order", async (t) => {
+  const f = setup(t);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const snapshots: string[] = [];
+  let writes = 0;
+  let unavailable = false;
+  const service = new WarmTransferCoordinator({
+    ...f.deps,
+    persistence: {
+      async save(record) {
+        if (++writes === 1) await gate;
+        if (unavailable) throw new Error("Database temporarily unavailable");
+        snapshots.push(record.phase);
+      },
+    },
+  });
+  t.after(() => service.shutdown());
+  const id = service.start("CA-caller", f.tool, f.tool.destinations[0], f.snapshot);
+  await tick();
+  assert.deepEqual(f.operations, []);
+  release();
+  await until(() => service.get(id).operatorSid === "CA-operator");
+  await service.flush();
+  assert.equal(snapshots[0], "preparing");
+  assert.ok(snapshots.includes("dialing"));
+  unavailable = true;
+  await assert.rejects(() => service.operatorAnswered(id, "CA-operator", "+14155550123"), /temporarily unavailable/);
+  const beforeRetry = snapshots.length;
+  unavailable = false;
+  await service.flush();
+  assert.ok(snapshots.length > beforeRetry);
+  assert.equal(snapshots.at(-1), "consulting");
+});
+
+test("operator terminal callbacks notify call finalization", async (t) => {
+  const f = setup(t);
+  const finalized: string[] = [];
+  const service = new WarmTransferCoordinator({ ...f.deps, onCallEnded: async (sid) => { finalized.push(sid); } });
+  t.after(() => service.shutdown());
+  const id = service.start("CA-caller", f.tool, f.tool.destinations[0], f.snapshot);
+  await until(() => service.get(id).operatorSid === "CA-operator");
+  await service.operatorStatus(id, "CA-operator", "+14155550123", "completed");
+  assert.ok(finalized.includes("CA-operator"));
 });

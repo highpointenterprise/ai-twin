@@ -105,6 +105,7 @@ export interface LanguageModel {
 }
 
 export interface RealtimeConfig {
+  trace?: ProviderTrace;
   instructions: string;
   voice: string;
   model: string;
