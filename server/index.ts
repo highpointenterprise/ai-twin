@@ -1,3 +1,4 @@
+import { errorDetail } from "./observability/diagnostics";
 import "dotenv/config";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -46,6 +47,7 @@ import { MeetingService } from "./meetings/service";
 import { MeetingStore } from "./meetings/store";
 import { GoogleMeetBrowserDriver } from "./meetings/browser-driver";
 import { createLiveAvatar } from "./meetings/liveavatar";
+let startupStage = "configuration";
 async function main(): Promise<void> {
   const background = new Set<Promise<unknown>>();
   const track = <T>(task: Promise<T>): Promise<T> => {
@@ -53,6 +55,7 @@ async function main(): Promise<void> {
     void task.finally(() => background.delete(task)).catch(() => {});
     return task;
   };
+  startupStage = "MongoDB connection";
   const mongo = new MongoClient(env.MONGODB_URI, {
     maxPoolSize: 50,
     minPoolSize: 2,
@@ -61,6 +64,7 @@ async function main(): Promise<void> {
   });
   await mongo.connect();
   const db = mongo.db(env.MONGODB_DATABASE);
+  startupStage = "Redis connection";
   const redis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
@@ -68,6 +72,7 @@ async function main(): Promise<void> {
   });
   await redis.connect();
   await redis.ping();
+  startupStage = "R2/MinIO bucket access";
   const objects = new ObjectStore({
     endpoint: env.S3_ENDPOINT,
     region: env.S3_REGION,
@@ -77,6 +82,7 @@ async function main(): Promise<void> {
     forcePathStyle: env.S3_FORCE_PATH_STYLE,
   });
   await objects.check();
+  startupStage = "MongoDB indexes and configuration";
   const calls = new MongoCallRepository(db);
   const store = new MongoAgentStore(db);
   const tools = new MongoToolRegistry(db);
@@ -101,6 +107,7 @@ async function main(): Promise<void> {
       new RedisContextBackend(redis, `${env.REDIS_PREFIX}:{contexts}`),
     );
   const callState = new RedisCallState(redis, `${env.REDIS_PREFIX}:{calls}`);
+  startupStage = "credential encryption key";
   const credentials = new MongoTwilioCredentialStore(
     db,
     env.CREDENTIAL_ENCRYPTION_KEY,
@@ -153,6 +160,7 @@ async function main(): Promise<void> {
     expectedMinutesPerMonth: env.HOSTING_EXPECTED_MINUTES_PER_MONTH,
     egressUsdPerGb: env.HOSTING_EGRESS_USD_PER_GB,
   };
+  startupStage = "Redis job queue";
   const artifacts = new ArtifactQueue(
     env.REDIS_URL,
     async ({ sid, revision }) => {
@@ -335,6 +343,7 @@ async function main(): Promise<void> {
     recordingReady: (sid, recordingSid) =>
       artifacts.enqueue(sid, `recording-${recordingSid}`),
   };
+  startupStage = "HTTP listeners";
   const publicServer = createServer(createPublicApp(deps));
   const media = attachMediaServer(publicServer, {
     factory: (init) =>
@@ -412,7 +421,7 @@ async function main(): Promise<void> {
 void main().catch((error) => {
   console.error(
     "storage.startup_failed",
-    error instanceof Error ? error.message : "Unknown error",
+    { stage: startupStage, ...errorDetail(error), httpStatus: error?.$metadata?.httpStatusCode ?? null },
   );
   process.exit(1);
 });
