@@ -46,7 +46,21 @@ export class ObjectStore {
     });
   }
   async check(): Promise<void> {
-    await this.client.send(new HeadBucketCommand({ Bucket: this.options.bucket }));
+    if (!this.options.accessKeyId || !this.options.secretAccessKey)
+      throw new Error("Set S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY to your object storage API credentials.");
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.options.bucket }));
+    } catch (error) {
+      const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+      const hint = status === 401 || status === 403
+        ? "Access denied. Check the S3 access-key pair, bucket-scoped Object Read & Write permission, and matching R2 account endpoint."
+        : status === 404
+          ? "Bucket not found. S3_BUCKET must be the exact existing bucket name; S3_ENDPOINT must be the S3 API endpoint without a bucket path."
+          : "Check S3_ENDPOINT (the S3 API endpoint, not a public bucket URL), S3_BUCKET, region, and API credentials.";
+      const failure = new Error(`Object storage bucket check failed (HTTP ${status ?? "unavailable"}). ${hint}`, { cause: error });
+      Object.assign(failure, { $metadata: { httpStatusCode: status } });
+      throw failure;
+    }
   }
   async put(key: string, body: string | Buffer | Uint8Array, contentType: string): Promise<StoredObject> {
     this.validateKey(key);
