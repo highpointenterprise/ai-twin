@@ -2,6 +2,8 @@ import { MongoServerError, type Collection, type Db, type Filter } from "mongodb
 import type { ToolConfig } from "../../../../lib/config";
 import type { AgentConfig } from "../../../../lib/types";
 import type { AssistantBody, AssistantOverrides } from "../schemas/assistant";
+import type { CustomerBody, CreateCallBody } from "../schemas/call";
+import { conflict } from "../http/errors";
 import { timeFilters, type TimeRange } from "../schemas/common";
 
 export type RequestPhase = "scheduled" | "queued" | "dialing" | "placed" | "failed";
@@ -20,7 +22,9 @@ export interface CallRequestDocument {
   assistantOverrides?: AssistantOverrides;
   transientAssistant?: AssistantBody;
   phoneNumberId?: string;
-  customer: { number: string; name?: string };
+  customer: CustomerBody;
+  transport?: CreateCallBody["transport"];
+  requestHash?: string;
   from: string;
   agent: AgentConfig;
   tools: ToolConfig[];
@@ -81,7 +85,10 @@ export class CallRequestRepository {
     } catch (error) {
       if (error instanceof MongoServerError && error.code === 11000 && document.idempotencyKey) {
         const existing = await this.requests.findOne({ orgId: this.orgId, idempotencyKey: document.idempotencyKey });
-        if (existing) return { document: strip(existing), replayed: true };
+        if (existing) {
+          if (existing.requestHash && document.requestHash && existing.requestHash !== document.requestHash) throw conflict("Idempotency-Key was already used for a different call request.");
+          return { document: strip(existing), replayed: true };
+        }
       }
       throw error;
     }

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate, type ApiKeyStore } from "../auth/api-keys";
-import { apiErrorHandler } from "../http/errors";
+import { apiErrorHandler, notFound } from "../http/errors";
 import { jsonBody, requestContext, requireJson } from "../http/middleware";
 import type { RedisCallState } from "../../../storage/redis";
 import { assistantRoutes } from "./assistants";
@@ -29,6 +29,7 @@ export const createApiRouter = (deps: ApiRouterDependencies): Router => {
   router.use("/phone-number", phone.v1);
   router.use("/v2/phone-number", phone.v2);
   router.use("/tool", toolRoutes(deps.tools));
+  router.use(prefixes, (_req, _res, next) => next(notFound("API endpoint not found.")));
   router.use(prefixes, apiErrorHandler);
   return router;
 };

@@ -14,6 +14,7 @@ import type { ObjectStore } from "../../storage/objects";
 import type { RedisCallState } from "../../storage/redis";
 import type { CallRegistry } from "../../store/calls";
 import type { ContextStore } from "../../store/contexts";
+import { ApiKeyDirectory } from "./auth/key-directory";
 import { ApiKeyStore } from "./auth/api-keys";
 import { CallRequestRepository } from "./repositories/call-requests";
 import { AssistantApiRepository, PhoneNumberApiRepository, ToolApiRepository } from "./repositories/resources";
@@ -23,6 +24,7 @@ import { PhoneNumberService } from "./services/phone-numbers";
 
 export interface ApiV1Dependencies {
   db: Db;
+  authDb?: Db;
   redis: Redis;
   callState: RedisCallState;
   calls: MongoCallRepository;
@@ -48,7 +50,7 @@ const LEASE_TTL_MS = 600_000;
 
 export const createApiV1 = async (deps: ApiV1Dependencies): Promise<ApiV1> => {
   const orgId = deps.orgId ?? "default";
-  const keys = new ApiKeyStore(deps.db, orgId);
+  const keys = new ApiKeyStore(deps.db, orgId, deps.authDb ? new ApiKeyDirectory(deps.authDb) : undefined);
   const requests = new CallRequestRepository(deps.db, orgId);
   const assistants = new AssistantApiRepository(deps.db, orgId);
   const toolListing = new ToolApiRepository(deps.db, orgId);
@@ -105,6 +107,7 @@ export const createApiV1 = async (deps: ApiV1Dependencies): Promise<ApiV1> => {
     dispatcher: () => dispatcher,
     readiness,
     defaultFrom: env.TWILIO_PHONE_NUMBER,
+    accountSid,
   });
   const router = createApiRouter({
     keys,

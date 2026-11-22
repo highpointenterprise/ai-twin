@@ -62,6 +62,7 @@ export interface HttpDeps {
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
   billingRouter?: Router;
+  apiKeysRouter?: Router;
   phoneNumbers?: import("../phone-numbers/service").PhoneNumbers;
   meetings?: MeetingService;
   costs?: CostTracker;
@@ -294,6 +295,7 @@ export const createAdminApp = (
       });
     }),
   );
+  if (d.apiKeysRouter) app.use("/api/api-keys", d.apiKeysRouter);
   if (d.billingRouter) app.use("/api/billing", d.billingRouter);
   app.get(
     "/api/agents",

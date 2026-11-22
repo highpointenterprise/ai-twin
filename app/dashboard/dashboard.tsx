@@ -5,6 +5,8 @@ import type { AgentConfig, PhoneNumberView } from "@/lib/types";
 import { AssistantsWorkspace } from "@/app/components/assistants/workspace";
 import { LogoutButton } from "@/app/components/logout-button";
 import { ToolEditor } from "@/app/components/tool-editor";
+import { ApiKeysPanel } from "@/app/components/api-keys-panel";
+import { CopyValue } from "@/app/components/copy-value";
 import { BillingPanel } from "@/app/components/billing-panel";
 import { CallsPanel } from "@/app/components/calls-panel";
 import { api, apiList } from "@/app/components/api";
@@ -23,12 +25,13 @@ const sections = [
   "Phone numbers",
   "Calls",
   "Usage & costs",
+  "API keys",
   "Diagnostics",
 ] as const;
 export default function Page({
   user,
 }: {
-  user: { name: string; email: string };
+  user: { id: string; name: string; email: string };
 }) {
   const leaveGuard = useRef<() => boolean>(() => true);
   const [loadVersion, setLoadVersion] = useState(0);
@@ -118,6 +121,7 @@ export default function Page({
         <div className="workspace-account">
           <strong>{user.name}</strong>
           <span>{user.email}</span>
+          <CopyValue label="Workspace / User ID" value={user.id} />
         </div>
         <p className="nav-caption">WORKSPACE</p>
         <nav aria-label="Dashboard">
@@ -303,6 +307,7 @@ export default function Page({
                 }}
               />
             )}
+            {section === "API keys" && <ApiKeysPanel userId={user.id} agents={agents} numbers={numbers} />}
             {section === "Usage & costs" && <BillingPanel />}
             {section === "Calls" && (
               <CallsPanel

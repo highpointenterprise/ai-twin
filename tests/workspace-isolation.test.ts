@@ -14,6 +14,7 @@ import { WorkspacePool } from "../server/workspaces/pool";
 import { createWorkspaceGateway } from "../server/workspaces/gateway";
 import { workspaceEnvironment, workspaceIdentity } from "../server/workspaces/identity";
 import { MongoCallRepository } from "../server/storage/calls";
+import { ApiKeyDirectory } from "../server/api/v1/auth/key-directory";
 import { ApiKeyStore } from "../server/api/v1/auth/api-keys";
 import { ObjectStore } from "../server/storage/objects";
 
@@ -53,7 +54,7 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   await mkdir(aIdentity.directory, { recursive: true });
   await writeFile(join(aIdentity.directory, "meetings.json"), JSON.stringify([{ id: meetingId, phase: "ended", updatedAt: Date.now(), secret: "A only" }]));
   const pool = new WorkspacePool(db, base);
-  const apps = createWorkspaceGateway(auth, secret, pool);
+  const apps = createWorkspaceGateway(auth, secret, pool, new ApiKeyDirectory(db));
   const admin = apps.admin.listen(0, "127.0.0.1"), pub = apps.publicApp.listen(0, "127.0.0.1");
   await Promise.all([admin, pub].map(s => new Promise<void>(resolve => s.once("listening", resolve))));
   const url = `http://127.0.0.1:${(admin.address() as { port: number }).port}`;
@@ -77,6 +78,18 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
     const response = await req(n, "/api/agents"); assert.equal(response.status, 200); assert.deepEqual(await response.json(), []);
     assert.equal((await (await req(n, "/api/health")).json()).twilio.configured, false);
   }
+  const issuedResponse = await req(0, "/api/api-keys", "POST", { name: "Root API" });
+  assert.equal(issuedResponse.status, 201);
+  const issued = await issuedResponse.json();
+  assert.equal((await req(1, `/api/api-keys/${issued.id}`, "DELETE")).status, 404);
+  const keyInfo = await (await req(0, "/api/api-keys")).json();
+  assert.equal(keyInfo.apiBaseUrl, base.PUBLIC_BASE_URL);
+  assert.equal(keyInfo.userId, users[0].id);
+  const rootCalls = await fetch(`${publicUrl}/call`, { headers: { Authorization: `Bearer ${issued.key}` } });
+  assert.equal(rootCalls.status, 200);
+  assert.deepEqual(await rootCalls.json(), []);
+  assert.equal((await req(0, `/api/api-keys/${issued.id}`, "DELETE")).status, 204);
+  assert.equal((await fetch(`${publicUrl}/call`, { headers: { Authorization: `Bearer ${issued.key}` } })).status, 401);
   const agent = await (await req(0, "/api/agents", "POST", { name: "A private assistant", systemPrompt: "Private", server: { url: "https://a.example/webhook" }, userId: users[1].id, orgId: users[1].id })).json();
   assert.equal((await req(1, `/api/agents/${agent.id}`, "PUT", { name: "stolen", systemPrompt: "stolen" })).status, 404);
   assert.deepEqual(await (await req(1, "/api/agents")).json(), []);
