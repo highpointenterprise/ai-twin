@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { MongoClient } from "mongodb";
+import { workspaceIdentity } from "../server/workspaces/identity";
 import { spawn, type ChildProcess } from "node:child_process";
 import { access, chmod, constants, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -96,12 +98,20 @@ async function writeFileAtomically(path: string, contents: string): Promise<void
 }
 
 async function main(): Promise<void> {
+  const userId = process.argv[2];
+  if (!userId) throw new Error("Usage: npm run meet:login -- <user-id>");
+  const identity = workspaceIdentity(userId, process.env);
+  const mongo = await new MongoClient(env.MONGODB_URI).connect();
+  try {
+    if (!(await mongo.db(env.MONGODB_DATABASE).collection("users").findOne({ _id: userId as never }))) throw new Error("User not found.");
+  } finally { await mongo.close(); }
+
   if (!stdin.isTTY) {
     throw new Error("Run meet:login interactively on a machine with a desktop display.");
   }
 
   const storageStatePath = resolve(
-    env.MEET_GOOGLE_STORAGE_STATE_PATH || `${env.DATA_DIR}/google-meet-storage-state.json`,
+    `${identity.directory}/google-meet-storage-state.json`,
   );
   const [executablePath, port, profileDirectory] = await Promise.all([
     resolveChromeExecutable(),

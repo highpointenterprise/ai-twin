@@ -5,13 +5,13 @@ import { AuthStore, DuplicateEmailError } from "./store";
 
 const bearer = (header?: string): string | undefined => /^Bearer ([A-Za-z0-9_-]{43})$/i.exec(header ?? "")?.[1];
 
-export function requireUser(store: AuthStore): RequestHandler {
+export function requireUser(store: AuthStore, workspaceUserId?: string): RequestHandler {
   return async (req, res, next) => {
     res.set("Cache-Control", "no-store");
     try {
       const token = bearer(req.get("authorization"));
       const user = token ? await store.userForSession(token) : null;
-      if (!user) {
+      if (!user || (workspaceUserId && user.id !== workspaceUserId)) {
         res.set("WWW-Authenticate", "Bearer").status(401).json({ error: "Sign in to continue." });
         return;
       }

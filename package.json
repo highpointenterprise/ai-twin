@@ -12,7 +12,7 @@
     "storage:migrate": "DOTENV_CONFIG_PATH=server/.env tsx scripts/migrate-storage.ts",
     "storage:init": "DOTENV_CONFIG_PATH=server/.env tsx scripts/init-object-store.ts",
     "dev:api": "DOTENV_CONFIG_PATH=server/.env tsx watch server/index.ts",
-    "build:api": "esbuild server/index.ts --bundle --platform=node --packages=external --target=node24 --outdir=server/dist",
+    "build:api": "esbuild server/index.ts server/worker.ts --bundle --platform=node --packages=external --target=node24 --outdir=server/dist",
     "start:api": "DOTENV_CONFIG_PATH=server/.env node server/dist/index.js",
     "test:auth": "tsx --test tests/auth.test.ts",
     "test:auth:browser": "tsx --test tests/browser/auth.test.ts"

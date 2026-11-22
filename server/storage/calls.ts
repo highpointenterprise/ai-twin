@@ -1,3 +1,4 @@
+import { env } from "../../lib/env";
 import { randomUUID } from "node:crypto";
 import { isCallUsage, UsageAccumulator } from "../billing/merge-usage";
 import type { Collection, Db, Filter, Document } from "mongodb";
@@ -99,6 +100,7 @@ export class MongoCallRepository {
     const now = record.updatedAt ?? Date.now();
     const document: StoredCall = {
       ...record,
+      ...(env.WORKSPACE_USER_ID ? { userId: env.WORKSPACE_USER_ID } : {}),
       id: record.sid,
       assistantId: record.agentId,
       type: record.direction === "inbound" ? "inboundPhoneCall" : "outboundPhoneCall",
