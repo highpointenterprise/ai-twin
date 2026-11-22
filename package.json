@@ -2,15 +2,20 @@
   "name": "voice-agent",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n web,voice -c cyan,magenta \"next dev\" \"tsx watch server/index.ts\"",
+    "dev": "next dev",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "tsx --test tests/browser/*.test.ts",
-    "meet:login": "tsx scripts/meet-login.ts",
+    "meet:login": "DOTENV_CONFIG_PATH=server/.env tsx scripts/meet-login.ts",
     "build": "next build",
-    "start": "concurrently -k -n web,voice \"next start\" \"tsx server/index.ts\"",
-    "storage:migrate": "tsx scripts/migrate-storage.ts",
-    "storage:init": "tsx scripts/init-object-store.ts"
+    "start": "next start",
+    "storage:migrate": "DOTENV_CONFIG_PATH=server/.env tsx scripts/migrate-storage.ts",
+    "storage:init": "DOTENV_CONFIG_PATH=server/.env tsx scripts/init-object-store.ts",
+    "dev:api": "DOTENV_CONFIG_PATH=server/.env tsx watch server/index.ts",
+    "build:api": "esbuild server/index.ts --bundle --platform=node --packages=external --target=node24 --outdir=server/dist",
+    "start:api": "DOTENV_CONFIG_PATH=server/.env node server/dist/index.js",
+    "test:auth": "tsx --test tests/auth.test.ts",
+    "test:auth:browser": "tsx --test tests/browser/auth.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",
@@ -28,10 +33,12 @@
     "livekit-client": "^2.23.0",
     "mongodb": "^7.9.0",
     "next": "^15.1.0",
+    "next-auth": "^4.24.15",
     "openai": "^4.77.0",
     "playwright": "^1.65.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.7.0",
     "twilio": "^5.4.0",
     "undici": "^7.16.0",
@@ -45,9 +52,11 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/ws": "^8.5.13",
-    "concurrently": "^9.1.0",
     "tailwindcss": "^4.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

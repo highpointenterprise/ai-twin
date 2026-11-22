@@ -1,3 +1,4 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -20,7 +21,6 @@ import { CallRegistry } from "../server/store/calls";
 import { ContextStore } from "../server/store/contexts";
 import { SessionPool } from "../server/engine/pool";
 import {
-  createAdminApp,
   createPublicApp,
   type HttpDeps,
 } from "../server/http/routes";

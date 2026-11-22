@@ -50,8 +50,11 @@ import { MeetingService } from "./meetings/service";
 import { MeetingStore } from "./meetings/store";
 import { GoogleMeetBrowserDriver } from "./meetings/browser-driver";
 import { createLiveAvatar } from "./meetings/liveavatar";
+import { AuthStore } from "./auth/store";
+import { createAuthRouter, requireUser } from "./auth/routes";
 let startupStage = "configuration";
 async function main(): Promise<void> {
+  if (env.AUTH_API_SECRET.length < 32) throw new Error("AUTH_API_SECRET must contain at least 32 characters.");
   const background = new Set<Promise<unknown>>();
   const track = <T>(task: Promise<T>): Promise<T> => {
     background.add(task);
@@ -67,6 +70,8 @@ async function main(): Promise<void> {
   });
   await mongo.connect();
   const db = mongo.db(env.MONGODB_DATABASE);
+  const authStore = new AuthStore(db);
+  await authStore.initialize();
   startupStage = "Redis connection";
   const redis = new Redis(env.REDIS_URL, {
     maxRetriesPerRequest: 1,
@@ -382,11 +387,14 @@ async function main(): Promise<void> {
     logEvent("server.public_listening", { port: env.PORT }),
   );
   void api.dispatcher.start().catch((error) => logEvent("callqueue.start_failed", errorDetail(error)));
-  const adminApp = createAdminApp(deps);
+  const adminApp = createAdminApp(deps, {
+    router: createAuthRouter(authStore, env.AUTH_API_SECRET),
+    requireUser: requireUser(authStore),
+  });
   adminApp.get("/metrics", (_req, res) => {
     void metrics.render().then((body) => res.type("text/plain; version=0.0.4").send(body));
   });
-  const admin = adminApp.listen(env.ADMIN_PORT, "127.0.0.1", () =>
+  const admin = adminApp.listen(env.ADMIN_PORT, env.ADMIN_HOST, () =>
     logEvent("server.admin_listening", { port: env.ADMIN_PORT }),
   );
   logEvent("configuration", {

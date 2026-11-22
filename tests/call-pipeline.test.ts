@@ -1,3 +1,4 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -14,7 +15,6 @@ import { SessionPool } from "../server/engine/pool";
 import { TraceStore } from "../server/observability/trace";
 import { StandardSession } from "../server/engine/standard-session";
 import {
-  createAdminApp,
   createPublicApp,
   type HttpDeps,
 } from "../server/http/routes";
