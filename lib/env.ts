@@ -34,6 +34,8 @@ const schema = z.object({
   STREAM_SECRET: z.string().default(""),
   PORT: z.coerce.number().int().positive().default(8080),
   ADMIN_PORT: z.coerce.number().int().positive().default(8081),
+  ADMIN_HOST: z.string().default("127.0.0.1"),
+  AUTH_API_SECRET: z.string().default(""),
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),
   MONGODB_URI: z.string().default("mongodb://127.0.0.1:27017"),
   MONGODB_DATABASE: z.string().default("ai_twin"),

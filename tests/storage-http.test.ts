@@ -1,8 +1,8 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { MongoClient } from "mongodb";
-import { createAdminApp } from "../server/http/routes";
 import { MongoAgentStore, MongoToolRegistry } from "../server/storage/config";
 import { MongoCallRepository } from "../server/storage/calls";
 import { CallRegistry } from "../server/store/calls";

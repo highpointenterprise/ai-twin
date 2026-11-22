@@ -1,3 +1,4 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -21,7 +22,6 @@ import {
   createTwilioWarmTelephony,
 } from "../server/providers/twilio";
 import {
-  createAdminApp,
   createPublicApp,
   type HttpDeps,
 } from "../server/http/routes";

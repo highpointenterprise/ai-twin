@@ -1,3 +1,4 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -16,7 +17,6 @@ import {
   diagnosticEvents,
 } from "../server/observability/diagnostics";
 import {
-  createAdminApp,
   createPublicApp,
   type HttpDeps,
 } from "../server/http/routes";

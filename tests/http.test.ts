@@ -1,9 +1,9 @@
+import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import twilio from "twilio";
 import {
-  createAdminApp,
   createPublicApp,
   type HttpDeps,
 } from "../server/http/routes";

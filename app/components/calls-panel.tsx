@@ -50,7 +50,7 @@ export function CallsPanel({
     if (tab) tab.opener = null;
     try {
       const response = await fetch(
-        `/api/calls/${encodeURIComponent(sid)}/artifacts/${kind}`,
+        `/api/backend/calls/${encodeURIComponent(sid)}/artifacts/${kind}`,
       );
       if (response.status === 404) {
         tab?.close();
@@ -81,7 +81,7 @@ export function CallsPanel({
     const load = async () => {
       try {
         const response = await fetch(
-          `/api/calls?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+          `/api/backend/calls?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
         );
         if (!response.ok) throw new Error("Cannot load call history.");
         const c = (await response.json()) as CallRecord[];

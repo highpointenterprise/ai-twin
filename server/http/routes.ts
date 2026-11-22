@@ -12,6 +12,7 @@ import express, {
   type NextFunction,
   type Request,
   type RequestHandler,
+  type Router,
   type Response,
 } from "express";
 import { z, ZodError } from "zod";
@@ -170,23 +171,30 @@ const requireReady = (d: HttpDeps, voiceId: string): void => {
       `Live calling is not configured: ${missing.join(", ")}`,
     );
 };
-export const createAdminApp = (d: HttpDeps): Express => {
+export const createAdminApp = (
+  d: HttpDeps,
+  auth: { router: Router; requireUser: RequestHandler },
+): Express => {
   const { store, registry, telephony, tools, contexts, traces } = d;
   const app = express();
+  app.disable("x-powered-by");
+  app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  app.use("/api/v1/auth", auth.router);
+  app.use(auth.requireUser);
   app.use(express.json({ limit: "128kb" }));
   app.use(requestLog(traces, "admin"));
   app.use((req, res, next) => {
     void Promise.resolve(d.twilioSettings?.refresh()).then(() => next(), next);
   });
-  // This API binds to loopback. Prevent a foreign website from mutating it through a browser.
   app.use((req, res, next) => {
     const origin = req.get("origin");
-    if (
-      origin &&
-      new URL(origin).host !== (req.get("x-forwarded-host") || req.get("host"))
-    ) {
-      res.status(403).json({ error: "Cross-origin request rejected." });
-      return;
+    if (origin) {
+      try {
+        if (new URL(origin).host !== req.get("host")) throw new Error();
+      } catch {
+        res.status(403).json({ error: "Cross-origin request rejected." });
+        return;
+      }
     }
     next();
   });
