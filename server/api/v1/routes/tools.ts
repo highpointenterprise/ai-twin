@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { MongoToolRegistry } from "../../../storage/config";
 import type { AssistantApiRepository, ToolApiRepository } from "../repositories/resources";
 import { asyncRoute, conflict } from "../http/errors";
-import { mergeTool, toToolInput, toVapiTool, type ToolDocument } from "../mappers/tool";
+import { mergeTool, toToolInput, toApiTool, type ToolDocument } from "../mappers/tool";
 import { idParams } from "../schemas/common";
 import { toolBodySchema, toolListQuerySchema } from "../schemas/tool";
 
@@ -18,24 +18,24 @@ export const toolRoutes = ({ registry, listing, assistants, orgId }: ToolRouteDe
 
   router.post("/", asyncRoute(async (req, res) => {
     const saved = await registry.save(toToolInput(toolBodySchema.parse(req.body ?? {})));
-    res.status(201).json(toVapiTool(saved as ToolDocument, orgId));
+    res.status(201).json(toApiTool(saved as ToolDocument, orgId));
   }));
 
   router.get("/", asyncRoute(async (req, res) => {
     const { limit, ...range } = toolListQuerySchema.parse(req.query);
-    res.json((await listing.list(range, limit)).map((tool) => toVapiTool(tool, orgId)));
+    res.json((await listing.list(range, limit)).map((tool) => toApiTool(tool, orgId)));
   }));
 
   router.get("/:id", asyncRoute(async (req, res) => {
     const { id } = idParams.parse(req.params);
-    res.json(toVapiTool((await registry.get(id)) as ToolDocument, orgId));
+    res.json(toApiTool((await registry.get(id)) as ToolDocument, orgId));
   }));
 
   router.patch("/:id", asyncRoute(async (req, res) => {
     const { id } = idParams.parse(req.params);
     const merged = mergeTool(await registry.get(id), req.body ?? {});
     const saved = await registry.save(toToolInput(merged), id);
-    res.json(toVapiTool(saved as ToolDocument, orgId));
+    res.json(toApiTool(saved as ToolDocument, orgId));
   }));
 
   router.delete("/:id", asyncRoute(async (req, res) => {
@@ -43,7 +43,7 @@ export const toolRoutes = ({ registry, listing, assistants, orgId }: ToolRouteDe
     const current = (await registry.get(id)) as ToolDocument;
     if (await assistants.usesTool(id)) throw conflict("Tool is attached to an assistant. Detach it first.");
     await registry.delete(id);
-    res.json(toVapiTool(current, orgId));
+    res.json(toApiTool(current, orgId));
   }));
 
   return router;

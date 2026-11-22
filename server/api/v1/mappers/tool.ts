@@ -52,7 +52,7 @@ export const toToolInput = (body: ToolBody): ToolInput => {
   }
 };
 
-export const toVapiToolBody = (tool: ToolConfig): ToolBody => {
+export const toApiToolBody = (tool: ToolConfig): ToolBody => {
   switch (tool.type) {
     case "function":
       return {
@@ -86,13 +86,13 @@ export const toVapiToolBody = (tool: ToolConfig): ToolBody => {
   }
 };
 
-export const toVapiTool = (document: ToolDocument, orgId: string): Record<string, unknown> => ({
+export const toApiTool = (document: ToolDocument, orgId: string): Record<string, unknown> => ({
   id: document.id,
   orgId,
   createdAt: document.createdAt,
   updatedAt: document.updatedAt,
-  ...toVapiToolBody(document),
+  ...toApiToolBody(document),
 });
 
 export const mergeTool = (current: ToolConfig, patch: unknown): ToolBody =>
-  toolBodySchema.parse(deepMerge(toVapiToolBody(current), patch));
+  toolBodySchema.parse(deepMerge(toApiToolBody(current), patch));

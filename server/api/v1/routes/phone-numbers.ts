@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { PhoneNumberApiRepository } from "../repositories/resources";
 import { asyncRoute, notFound } from "../http/errors";
-import { toVapiPhoneNumber } from "../mappers/phone-number";
+import { toApiPhoneNumber } from "../mappers/phone-number";
 import { idParams } from "../schemas/common";
 import {
   phoneNumberCreateSchema,
@@ -18,7 +18,7 @@ export interface PhoneNumberRouteDependencies {
 }
 
 export const phoneNumberRoutes = ({ numbers, service, accountSid }: PhoneNumberRouteDependencies): { v1: Router; v2: Router } => {
-  const view = (document: Parameters<typeof toVapiPhoneNumber>[0]) => toVapiPhoneNumber(document, accountSid());
+  const view = (document: Parameters<typeof toApiPhoneNumber>[0]) => toApiPhoneNumber(document, accountSid());
   const v1 = Router();
   const v2 = Router();
 

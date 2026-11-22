@@ -5,6 +5,7 @@ import type { AgentConfig, PhoneNumberView } from "@/lib/types";
 import { AssistantsWorkspace } from "@/app/components/assistants/workspace";
 import { LogoutButton } from "@/app/components/logout-button";
 import { ToolEditor } from "@/app/components/tool-editor";
+import { BillingPanel } from "@/app/components/billing-panel";
 import { CallsPanel } from "@/app/components/calls-panel";
 import { api, apiList } from "@/app/components/api";
 import { MeetingsPanel } from "@/app/components/meetings-panel";
@@ -21,6 +22,7 @@ const sections = [
   "Tools",
   "Phone numbers",
   "Calls",
+  "Usage & costs",
   "Diagnostics",
 ] as const;
 export default function Page({
@@ -301,6 +303,7 @@ export default function Page({
                 }}
               />
             )}
+            {section === "Usage & costs" && <BillingPanel />}
             {section === "Calls" && (
               <CallsPanel
                 agents={agents}

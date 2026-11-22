@@ -15,6 +15,8 @@ test("ElevenLabs clean EOS close without isFinal still delivers queued phone spe
     for (const c of server.clients) c.terminate();
     server.close();
   });
+  server.on("headers", (headers) => headers.push("request-id: generation-one"));
+  const trace = new CallTrace("CA-close");
   const pcm = Buffer.alloc(800, 0xff),
     events: Record<string, any>[] = [];
   server.on("connection", (socket) =>
@@ -38,7 +40,7 @@ test("ElevenLabs clean EOS close without isFinal still delivers queued phone spe
       callSid: "CA-close",
       streamSid: "MZ-close",
       brief: "",
-      trace: new CallTrace("CA-close"),
+      trace,
       send: (event) => {
         events.push(event);
         if ((event as any).event === "mark")
@@ -62,6 +64,10 @@ test("ElevenLabs clean EOS close without isFinal still delivers queued phone spe
   );
   assert.equal(events.filter((e) => e.event === "mark").length, 1);
   assert.equal(events.filter((e) => e.event === "clear").length, 0);
+  const generation = trace.usage.snapshot().requests?.[0];
+  assert.equal(generation?.providerRequestId, "generation-one");
+  assert.equal(generation?.quantity, [..."Hello, can you hear me?"].length + 1);
+  assert.equal(generation?.status, "completed");
 });
 
 for (const scenario of [

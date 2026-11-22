@@ -1,6 +1,6 @@
 import type { AgentConfig, CallCost, TranscriptLine } from "../../lib/types";
 import type { StoredCall } from "../storage/calls";
-import { vapiEndedReason } from "../api/v1/mappers/call";
+import { callEndedReason } from "../api/v1/mappers/call";
 
 export interface ReportArtifact {
   messages: {
@@ -116,7 +116,9 @@ function costView(
 ): {
   cost?: number;
   costs?: Record<string, unknown>[];
-  costBreakdown?: Record<string, number>;
+  costBreakdown?: Record<string, unknown>;
+  costSummary?: Record<string, unknown>;
+  usage?: CallCost["usage"];
 } {
   if (!cost) return {};
   const groups = new Map<string, typeof cost.lines>();
@@ -143,7 +145,7 @@ function costView(
         break;
       case "hosting":
         costs.push({
-          type: "vapi",
+          type: "platform",
           subType: "normal",
           minutes: cost.durationSec / 60,
           cost: usd,
@@ -153,7 +155,7 @@ function costView(
         costs.push({
           type: "transcriber",
           transcriber: { provider: first.provider, model: first.model },
-          minutes: lines.reduce((sum, line) => sum + line.quantity, 0),
+          minutes: (cost.usage?.transcriber.filter((item) => item.model === first.model).reduce((sum, item) => sum + item.audioSeconds, 0) ?? 0) / 60,
           cost: usd,
         });
         break;
@@ -165,10 +167,7 @@ function costView(
             model: first.model,
             ...(assistant?.voiceId ? { voiceId: assistant.voiceId } : {}),
           },
-          characters: lines.reduce(
-            (sum, line) => sum + line.quantity * 1000,
-            0,
-          ),
+          characters: cost.usage?.voice.filter((item) => item.model === first.model).reduce((sum, item) => sum + item.characters, 0) ?? 0,
           cost: usd,
         });
         break;
@@ -200,6 +199,8 @@ function costView(
   const b = cost.costBreakdown;
   return {
     cost: cost.totalUsd,
+    costSummary: { status: cost.status, reconciliationStatus: cost.reconciliationStatus, pricingVersion: cost.pricingVersion, reportedUsd: cost.reportedUsd, calculatedUsd: cost.calculatedUsd, estimatedUsd: cost.estimatedUsd, knownSubtotalUsd: cost.totalUsd, unpricedItems: cost.unpricedItems },
+    usage: cost.usage,
     costs,
     ...(b
       ? {
@@ -208,7 +209,7 @@ function costView(
             stt: b.stt,
             llm: b.llm,
             tts: b.tts,
-            vapi: b.hosting,
+            platform: b.hosting,
             total: b.total,
             llmPromptTokens: b.llmPromptTokens,
             llmCompletionTokens: b.llmCompletionTokens,
@@ -236,7 +237,7 @@ const knownReasons = new Set([
   "pipeline-error-openai-llm-failed",
 ]);
 
-// Vapi contract: https://docs.vapi.ai/api-reference/webhooks/server-message
+// Assistant server event contract.
 export function endOfCallReport(input: {
   call: StoredCall;
   transcript: TranscriptLine[];
@@ -306,7 +307,7 @@ export function endOfCallReport(input: {
     artifact.recordingUrl = url("mono-recording");
   }
   if (call.artifact?.logs) artifact.logUrl = url("call-logs");
-  const mapped = vapiEndedReason(
+  const mapped = callEndedReason(
     call.endedReason ?? (call.status === "failed" ? "failed" : undefined),
     "ended",
   )!;

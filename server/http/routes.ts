@@ -61,6 +61,7 @@ export interface HttpDeps {
   pendingCalls: number;
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
+  billingRouter?: Router;
   phoneNumbers?: import("../phone-numbers/service").PhoneNumbers;
   meetings?: MeetingService;
   costs?: CostTracker;
@@ -293,6 +294,7 @@ export const createAdminApp = (
       });
     }),
   );
+  if (d.billingRouter) app.use("/api/billing", d.billingRouter);
   app.get(
     "/api/agents",
     handle(async (req, res) => {

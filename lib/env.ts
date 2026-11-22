@@ -6,6 +6,7 @@ const schema = z.object({
   TWILIO_AUTH_TOKEN: z.string().default(""),
   TWILIO_PHONE_NUMBER: z.string().optional(),
   DEEPGRAM_API_KEY: z.string().default(""),
+  DEEPGRAM_PROJECT_ID: z.string().default(""),
   OPENAI_API_KEY: z.string().default(""),
   OPENROUTER_API_KEY: z.string().default(""),
   GROQ_API_KEY: z.string().default(""),

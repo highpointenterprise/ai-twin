@@ -11,7 +11,7 @@ export interface AssistantDocument extends AgentConfig {
   metadata?: Record<string, unknown>;
 }
 
-export interface VapiAssistant extends AssistantBody {
+export interface ApiAssistant extends AssistantBody {
   id: string;
   orgId: string;
   createdAt: string;
@@ -70,7 +70,7 @@ export const toAgentInput = (body: AssistantBody): AssistantInput => {
   });
 };
 
-export const toVapiAssistant = (document: AssistantDocument): VapiAssistant => {
+export const toApiAssistant = (document: AssistantDocument): ApiAssistant => {
   const voicemail = document.voicemailDetection;
   return {
     id: document.id,
@@ -122,7 +122,7 @@ export const toVapiAssistant = (document: AssistantDocument): VapiAssistant => {
 };
 
 export const editableAssistant = (document: AssistantDocument): AssistantBody => {
-  const { id: _id, orgId: _orgId, createdAt: _createdAt, updatedAt: _updatedAt, ...body } = toVapiAssistant(document);
+  const { id: _id, orgId: _orgId, createdAt: _createdAt, updatedAt: _updatedAt, ...body } = toApiAssistant(document);
   return body;
 };
 

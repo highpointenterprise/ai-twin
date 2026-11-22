@@ -88,6 +88,16 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   await calls.create({ sid: "CA-private-a", agentId: agent.id, from: "+12025550101", to: "+12025550102", direction: "outbound", status: "connected" });
   await calls.appendTranscript("CA-private-a", { role: "caller", at: Date.now(), text: "Private transcript" });
   assert.equal((await req(0, "/api/calls/CA-private-a")).status, 200);
+  await client.db(aIdentity.database).collection("call_costs").insertOne({ callId: "CA-private-a", userId: users[0].id, occurredAt: new Date(), cost: { totalUsd: 0.25, reportedUsd: 0.25, durationSec: 60 } });
+  assert.equal((await req(0, "/api/billing/calls/CA-private-a")).status, 200);
+  assert.equal((await req(1, "/api/billing/calls/CA-private-a")).status, 404);
+  const billingQuery = new URLSearchParams({ from: new Date(Date.now() - 86400000).toISOString(), to: new Date(Date.now() + 86400000).toISOString() });
+  assert.equal((await (await req(0, `/api/billing/summary?${billingQuery}`)).json()).groups[0].knownSubtotalUsd, 0.25);
+  assert.deepEqual((await (await req(1, `/api/billing/summary?${billingQuery}`)).json()).groups, []);
+  const aPricing = await (await req(0, "/api/billing/pricing")).json();
+  assert.equal((await req(0, "/api/billing/pricing", "PUT", { expectedVersion: aPricing.version, rates: { ...aPricing.rates, elevenlabsCreditUsd: 0.0002 }, hosting: aPricing.hosting, note: "A only" })).status, 200);
+  assert.equal((await (await req(1, "/api/billing/pricing")).json()).rates.elevenlabsCreditUsd, undefined);
+
   assert.deepEqual(await (await req(0, "/api/calls/CA-private-a/server-events")).json(), []);
   assert.equal(agent.server.url, "https://a.example/webhook");
   assert.deepEqual(await (await req(1, "/api/calls")).json(), []);

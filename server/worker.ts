@@ -18,7 +18,6 @@ import { createDeepgramTranscriber } from "./providers/deepgram";
 import { MongoClient } from "mongodb";
 import Redis from "ioredis";
 import { Readable } from "node:stream";
-import type { CallUsage } from "../lib/types";
 import { MongoAgentStore, MongoToolRegistry } from "./storage/config";
 import { MongoCallRepository } from "./storage/calls";
 import { MongoTwilioCredentialStore } from "./storage/credentials";
@@ -28,9 +27,9 @@ import {
   RedisContextBackend,
   RedisCallState,
 } from "./storage/redis";
-import { reconcileCallCost } from "./billing/reconcile";
+import { BillingService } from "./billing/service";
+import { billingRoutes } from "./billing/routes";
 import { twilioClient } from "./providers/twilio";
-import { loadDatabaseRates } from "./billing/pricing";
 import {
   createElevenLabsSynthesizer,
   listElevenLabsVoices,
@@ -97,7 +96,7 @@ async function main(): Promise<void> {
   });
   await objects.check();
   startupStage = "MongoDB indexes and configuration";
-  const calls = new MongoCallRepository(db);
+  const calls = new MongoCallRepository(db, () => twilioSettings.current().accountSid);
   const store = new MongoAgentStore(db, env.WORKSPACE_USER_ID);
   const tools = new MongoToolRegistry(db, env.WORKSPACE_USER_ID);
   await Promise.all([
@@ -152,7 +151,7 @@ async function main(): Promise<void> {
     synthesize: createElevenLabsSynthesizer,
     model: createOpenAiModel(),
     executeTool: async (tool, call, ctx) => {
-      const result = await executor.execute(tool, call, ctx);
+      const result = await executor.execute(tool, call, { ...ctx, usage: traces.for(ctx.callSid).usage });
       if (
         result.terminal &&
         (tool.type !== "transferCall" || tool.transferMode !== "warm")
@@ -168,11 +167,13 @@ async function main(): Promise<void> {
     },
     onScreening: (sid) => registry.patch(sid, { screeningEncountered: true }),
   };
-  const hosting = {
-    monthlyUsd: env.HOSTING_MONTHLY_USD,
-    expectedMinutesPerMonth: env.HOSTING_EXPECTED_MINUTES_PER_MONTH,
-    egressUsdPerGb: env.HOSTING_EGRESS_USD_PER_GB,
-  };
+  const billing = new BillingService(db, calls, {
+    getCallUsage: async (sid, accountSid) => {
+      const auth = accountSid ? await credentials.forAccount(accountSid) : twilioSettings.current();
+      if (!auth) throw new Error("The call's telephony account credentials are unavailable.");
+      return createTwilioTelephony(() => auth).getCallUsage(sid);
+    },
+  });
   const serverEvents = new AssistantServerEvents({ db, userId: env.WORKSPACE_USER_ID, calls, objects, baseUrl: env.PUBLIC_BASE_URL });
   await serverEvents.initialize();
   serverEvents.start();
@@ -226,30 +227,9 @@ async function main(): Promise<void> {
         await artifacts.enqueue(sid, `recording-cost-${recordingSid}`, 1000);
         return;
       }
-      const assistant = record.assistant ?? (await store.find(record.agentId));
-      const result = await reconcileCallCost({
-        record,
-        usage: (await calls.getUsage(sid)) as CallUsage | undefined,
-        getProviderUsage: telephony.getCallUsage,
-        children: await calls.children(sid),
-        rates: await loadDatabaseRates(db),
-        hosting,
-        amd: assistant?.voicemailDetection.enabled ?? false,
-      });
-      await calls.saveCost(
-        sid,
-        result.cost,
-        undefined,
-        record.storageRevision ?? 0,
-      );
-      await db
-        .collection<{ _id: string; usage: CallUsage }>("call_billing_usage")
-        .updateOne(
-          { _id: sid },
-          { $set: { usage: result.usage } },
-          { upsert: true },
-        );
+      let result = await billing.finalize(sid);
       await calls.exportArtifacts(sid, objects);
+      if ((await billing.pricing.forCall(sid)).hosting.storage) result = await billing.finalize(sid);
       if (result.retryReasons.length)
         throw new Error(result.retryReasons.join(" "));
       await serverEvents.enqueueEndOfCall(sid);
@@ -352,6 +332,7 @@ async function main(): Promise<void> {
     callState,
     finalizeCall,
     serverEvents: serverEvents.outbox,
+    billingRouter: billingRoutes(db, env.WORKSPACE_USER_ID, billing.pricing),
     meetings,
     retryStorage: async (sid) => {
       const call = await calls.get(sid);

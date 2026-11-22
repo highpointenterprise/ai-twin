@@ -455,6 +455,8 @@ function CallCostDetails({ cost }: { cost: CallCost }) {
         {" · "}
         {cost.status ?? (cost.estimated ? "estimated" : "final")}
       </p>
+      {cost.reportedUsd !== undefined && <p className="hint">Provider-reported charges: {money(cost.reportedUsd)} · Measured usage × rate: {money(cost.calculatedUsd)} · Estimates: {money(cost.estimatedUsd)} · Unpriced items: {cost.unpricedItems ?? 0}</p>}
+      {cost.pricingVersion && <p className="hint">Pricing version: {cost.pricingVersion} · Duration: {(cost.durationSec / 60).toFixed(3)} minutes</p>}
       {cost.reconciliationStatus === "pending" && (
         <p className="hint">
           Provider charges are still being reconciled. Values may update.
@@ -504,7 +506,7 @@ function CallCostDetails({ cost }: { cost: CallCost }) {
                     ? "Provider reported"
                     : line.usd === null
                       ? "Missing rate"
-                      : "Estimated"}
+                      : line.basis === "measured-usage" ? "Measured usage × rate" : line.basis === "infrastructure-estimate" ? "Infrastructure estimate" : "Estimated usage"}
                   {line.note && (
                     <details>
                       <summary>Details</summary>
@@ -579,6 +581,7 @@ function CallCostDetails({ cost }: { cost: CallCost }) {
           characters · Call duration: {cost.durationSec.toFixed(1)} seconds
         </p>
       )}
+      {!!cost.usage?.requests?.length && <details><summary>Provider request evidence & credits</summary><div className="table-scroll"><table aria-label="Provider request usage"><thead><tr><th>Provider</th><th>Request</th><th>Usage</th><th>Credits</th><th>Reconciliation</th></tr></thead><tbody>{cost.usage.requests.map((r) => <tr key={r.id}><td>{r.provider}<small>{r.model}</small></td><td>{r.providerRequestId ?? "No provider ID"}</td><td>{r.reportedQuantity ?? r.quantity} {r.unit}</td><td>{r.credits ?? "Unknown"}</td><td>{r.reconciliation ?? "Not reported"}</td></tr>)}</tbody></table></div></details>}
       {!!cost.relatedCalls?.length && (
         <details>
           <summary>

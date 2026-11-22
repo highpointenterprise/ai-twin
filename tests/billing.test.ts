@@ -62,7 +62,7 @@ test("realtime audio input, cached audio and audio output are priced separately 
 
 test("network cost bills only outbound bytes and snapshots survive JSON serialization", () => {
   const usage = new UsageMeter();
-  usage.addNetwork(4e9, 1e9);
+  usage.addNetwork(4 * 1024 ** 3, 1024 ** 3);
   usage.addStt("flux-general-en", 12.5);
   const saved = JSON.parse(JSON.stringify(usage.snapshot()));
   const restored = new UsageMeter();

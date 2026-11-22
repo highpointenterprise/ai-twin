@@ -37,6 +37,7 @@ export const elevenLabsSynthesizerFactory =
       output_format: outputFormat,
       auto_mode: "true",
     });
+    const usageId = trace?.usage?.startRequest("elevenlabs", config.model, "voice", "characters");
     const socket = connect(
       `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${query}`,
       {
@@ -45,10 +46,18 @@ export const elevenLabsSynthesizerFactory =
         handshakeTimeout: 10000,
       },
     );
+    socket.on("upgrade", (response) => {
+      const id = response.headers["request-id"] ?? response.headers["x-request-id"];
+      if (usageId && typeof id === "string") trace?.usage?.updateRequest(usageId, { providerRequestId: id });
+    });
     let readyResolve!: () => void,
       readyReject!: (e: Error) => void,
       doneResolve!: () => void,
       doneReject!: (e: Error) => void;
+    let completed = false;
+    const finishUsage = () => {
+      if (usageId) trace?.usage?.updateRequest(usageId, { endedAt: new Date().toISOString(), status: completed ? "completed" : "failed" });
+    };
     let settled = false,
       closed = false,
       endRequested = false,
@@ -72,6 +81,7 @@ export const elevenLabsSynthesizerFactory =
     const fail = (error: Error) => {
       if (settled || closed) return;
       settled = true;
+      finishUsage();
       clearTimeout(timeout);
       log("tts.failed", {
         ...errorDetail(error),
@@ -94,6 +104,8 @@ export const elevenLabsSynthesizerFactory =
         return;
       }
       settled = true;
+      completed = true;
+      finishUsage();
       clearTimeout(timeout);
       log("tts.completed", {
         via,
@@ -168,6 +180,7 @@ export const elevenLabsSynthesizerFactory =
     });
     socket.on("error", fail);
     socket.on("close", (code, reason) => {
+
       log("tts.closed", {
         code,
         reason: redactText(reason.toString()).slice(0, 300),
@@ -197,7 +210,7 @@ export const elevenLabsSynthesizerFactory =
           throw new Error("ElevenLabs socket closed before text was sent.");
         socket.send(JSON.stringify({ text: `${text} `, flush: true }));
         totalCharacters += text.length + 1;
-        trace?.usage?.addTts(config.model, text.length + 1);
+        trace?.usage?.addTts(config.model, [...text].length + 1, usageId);
         log("tts.text_sent", {
           characters: text.length,
           total_characters: totalCharacters,
@@ -218,6 +231,7 @@ export const elevenLabsSynthesizerFactory =
       close: () => {
         if (closed) return;
         closed = true;
+        finishUsage();
         clearTimeout(timeout);
         const error = new Error("Synthesis cancelled.");
         readyReject(error);
