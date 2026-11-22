@@ -13,7 +13,7 @@ import type { ObjectStore } from "../../../storage/objects";
 import type { ToolRepository } from "../../../tools/registry";
 import { ApiError, badRequest, conflict, notFound } from "../http/errors";
 import { editableAssistant, mergeAssistant, toAgentInput } from "../mappers/assistant";
-import { toVapiCall } from "../mappers/call";
+import { toApiCall } from "../mappers/call";
 import type { CallRequestDocument, CallRequestRepository } from "../repositories/call-requests";
 import type { AssistantApiRepository, PhoneNumberApiRepository, PhoneNumberDocument } from "../repositories/resources";
 import type { AssistantBody } from "../schemas/assistant";
@@ -96,7 +96,7 @@ export class CallService {
     phoneNumbers: ReadonlyMap<string, PhoneNumberDocument>,
     transcript?: TranscriptLine[],
   ): Record<string, unknown> {
-    return toVapiCall({ orgId: this.deps.orgId, baseUrl: this.deps.baseUrl, request, call, phoneNumbers, transcript });
+    return toApiCall({ orgId: this.deps.orgId, baseUrl: this.deps.baseUrl, request, call, phoneNumbers, transcript });
   }
 
   private async numberMap(numbers: string[]) {

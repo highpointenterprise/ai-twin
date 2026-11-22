@@ -82,6 +82,7 @@ export function attachMediaServer(
     let heartbeat: NodeJS.Timeout | undefined;
     let liveUpdate = Promise.resolve();
     let released = false;
+    let mediaBegan: number | undefined;
     const release = () => {
       released = true;
       clearInterval(heartbeat);
@@ -189,6 +190,7 @@ export function attachMediaServer(
           }, 30_000);
           heartbeat.unref();
           authenticated = true;
+          mediaBegan = Date.now();
           clearTimeout(timeout);
           log("media.started", {
             streamSid: start.streamSid,
@@ -286,6 +288,7 @@ export function attachMediaServer(
       messages = messages.then(() => processMessage(raw)).finally(() => { pendingMessages--; });
     });
     socket.on("close", (code, reason) => {
+      if (sid && mediaBegan !== undefined) deps.traces.for(sid).usage.addMediaSeconds((Date.now() - mediaBegan) / 1000);
       if (sid) deps.traces.for(sid).usage.addNetwork(inBytes, outBytes);
       log("media.socket_closed", {
         code,

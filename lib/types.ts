@@ -34,6 +34,8 @@ export interface TelephonyUsage {
   source: "provider" | "callback";
 }
 export interface CallUsage {
+  mediaSeconds?: number;
+  requests?: ProviderUsageRequest[];
   unmetered?: { provider: string; model: string; reason: string }[];
   llm: LlmUsageTotals[];
   transcriber: { provider: string; model: string; audioSeconds: number; source: "submitted-audio" }[];
@@ -41,9 +43,25 @@ export interface CallUsage {
   telephony: TelephonyUsage[];
   network: { receivedBytes: number; sentBytes: number };
 }
+export interface ProviderUsageRequest {
+  id: string;
+  provider: string;
+  model: string;
+  kind: "transcriber" | "voice" | "api";
+  providerRequestId?: string;
+  startedAt: string;
+  endedAt?: string;
+  quantity: number;
+  unit: "seconds" | "characters" | "requests";
+  status: "started" | "completed" | "failed";
+  reportedQuantity?: number;
+  credits?: number;
+  usd?: number;
+  reconciliation?: "pending" | "matched" | "unavailable";
+}
 export interface CostLine {
   provider: string;
-  type?: "model" | "transcriber" | "voice" | "transport" | "hosting";
+  type?: "model" | "transcriber" | "voice" | "transport" | "hosting" | "api";
   model?: string;
   item: string;
   quantity: number;
@@ -52,11 +70,17 @@ export interface CostLine {
   usd: number | null;
   source?: "provider" | "rate-card" | "unpriced";
   estimated?: boolean;
+  basis?: "provider-charge" | "measured-usage" | "estimated-usage" | "infrastructure-estimate" | "unknown";
   note?: string;
 }
 export interface CallCost {
   currency: "USD";
   durationSec: number;
+  durationMinutes?: number;
+  reportedUsd?: number;
+  calculatedUsd?: number;
+  estimatedUsd?: number;
+  unpricedItems?: number;
   lines: CostLine[];
   servicesUsd: number;
   hostingUsd: number;

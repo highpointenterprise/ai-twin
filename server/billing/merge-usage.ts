@@ -11,14 +11,21 @@ const count = (value: number | undefined): number => typeof value === "number" &
 
 /** Sums independent producer totals, never multiple revisions of one producer. */
 export class UsageAccumulator {
+  private readonly requests = new Map<string, NonNullable<CallUsage["requests"]>[number]>();
   private readonly llm = new Map<string, LlmUsageTotals>();
   private readonly transcriber = new Map<string, CallUsage["transcriber"][number]>();
   private readonly voice = new Map<string, CallUsage["voice"][number]>();
   private readonly telephony = new Map<string, TelephonyUsage>();
   private readonly unmetered = new Map<string, NonNullable<CallUsage["unmetered"]>[number]>();
   private receivedBytes = 0;
+  private mediaSeconds?: number;
   private sentBytes = 0;
   add(usage: CallUsage): void {
+    if (usage.mediaSeconds !== undefined) this.mediaSeconds = (this.mediaSeconds ?? 0) + count(usage.mediaSeconds);
+    for (const entry of usage.requests ?? []) {
+      const prior = this.requests.get(entry.id);
+      if (!prior || entry.quantity >= prior.quantity) this.requests.set(entry.id, { ...entry });
+    }
     for (const item of usage.llm) {
       const key = JSON.stringify([item.provider, item.model]);
       const existing = this.llm.get(key) ?? { provider: item.provider, model: item.model, requests: 0, estimatedRequests: 0, prompt: 0, cached: 0, completion: 0, reasoning: 0, inputAudio: 0, cachedAudio: 0, outputAudio: 0 };
@@ -53,6 +60,8 @@ export class UsageAccumulator {
   }
   snapshot(): CallUsage {
     return {
+      requests: [...this.requests.values()],
+      ...(this.mediaSeconds !== undefined ? { mediaSeconds: this.mediaSeconds } : {}),
       llm: [...this.llm.values()].map(item => ({ ...item })),
       transcriber: [...this.transcriber.values()].map(item => ({ ...item })),
       voice: [...this.voice.values()].map(item => ({ ...item })),

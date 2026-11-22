@@ -75,7 +75,10 @@ export const createOpenAiModel = (
             : {}),
         },
         { signal },
-      );
+      ).catch((error) => {
+        trace?.usage?.markMissing(route.provider, model, "Model request failed before returning usage; any provider charge is unknown.");
+        throw error;
+      });
       const calls = new Map<number, ToolCall>();
       let reported = false,
         outChars = 0;
@@ -149,6 +152,9 @@ export const createOpenAiModel = (
         model: route.model,
         messages: convert(messages),
         ...sampling(route, temperature, 500),
+      }).catch((error) => {
+        trace?.usage?.markMissing(route.provider, spec, "Model request failed before returning usage; any provider charge is unknown.");
+        throw error;
       });
       const text = r.choices[0]?.message.content?.trim() ?? "";
       trace?.usage?.addLlm(spec, {

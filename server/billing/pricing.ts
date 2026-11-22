@@ -10,6 +10,9 @@ export interface Rates {
   elevenlabs: Record<string, number>; // USD per 1k chars
   openai: Record<string, ModelRates>;
   models?: Record<string, ModelRates>; // USD per 1M tokens
+  api?: Record<string, number>;
+  elevenlabsCreditUsd?: number;
+  elevenlabsCreditsPerCharacter?: Record<string, number>;
   twilio: {
     inboundLocalPerMin: number;
     inboundTollFreePerMin: number;
@@ -22,9 +25,8 @@ export interface Rates {
 }
 export const defaultRates: Rates = {
   deepgram: { "flux-general-en": 0.0065, "flux-general-multi": 0.0078 },
-  elevenlabs: { eleven_flash_v2_5: 0.05, eleven_turbo_v2_5: 0.05, eleven_multilingual_v2: 0.1 },
+  elevenlabs: { eleven_flash_v2_5: 0.04, eleven_turbo_v2_5: 0.04, eleven_multilingual_v2: 0.08 },
   openai: {
-    "gpt-5.6-luna": { input: 0.2, cachedInput: 0.02, output: 1.2 },
     "gpt-4.1": { input: 2, cachedInput: 0.5, output: 8 },
     "gpt-4.1-mini": { input: 0.4, cachedInput: 0.1, output: 1.6 },
     "gpt-4o": { input: 2.5, cachedInput: 1.25, output: 10 },
@@ -34,13 +36,14 @@ export const defaultRates: Rates = {
     inboundLocalPerMin: 0.0085,
     inboundTollFreePerMin: 0.022,
     outboundPerMin: 0.014,
-    mediaStreamsPerMin: 0.004,
+    mediaStreamsPerMin: 0.0044,
     amdPerCall: 0.0075,
   },
 };
 const rate = z.number().finite().nonnegative();
 const modelRatesSchema = z.object({ input: rate, cachedInput: rate, output: rate, audioInput: rate.optional(), audioCachedInput: rate.optional(), audioOutput: rate.optional() }).strict();
-const ratesSchema = z.object({
+export const ratesSchema = z.object({
+  api: z.record(rate).optional(), elevenlabsCreditUsd: rate.optional(), elevenlabsCreditsPerCharacter: z.record(rate).optional(),
   deepgram: z.record(rate), elevenlabs: z.record(rate), openai: z.record(modelRatesSchema), models: z.record(modelRatesSchema).optional(),
   twilio: z.object({ inboundLocalPerMin: rate, inboundTollFreePerMin: rate, outboundPerMin: rate, mediaStreamsPerMin: rate, amdPerCall: rate, recordingPerMin: rate.optional(), conferencePerParticipantMin: rate.optional() }).strict(),
 }).strict();
@@ -66,4 +69,9 @@ export interface HostingConfig {
   monthlyUsd: number;
   expectedMinutesPerMonth: number;
   egressUsdPerGb: number;
+  configured?: boolean;
+  region?: string;
+  compute?: { vcpuPerCall: number; memoryGbPerCall: number; vcpuHourUsd: number; memoryGbHourUsd: number };
+  storage?: { gbMonthUsd: number; retentionDays: number };
+  overheadPerMinute?: Record<string, number>;
 }

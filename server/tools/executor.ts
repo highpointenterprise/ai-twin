@@ -91,6 +91,8 @@ export class ToolExecutor {
       context.signal,
       AbortSignal.timeout(tool.server.timeoutSeconds * 1000),
     ]);
+    const usageId = context.usage?.startRequest("api", tool.id, "api", "requests");
+    if (usageId) context.usage?.addRequestUnits(usageId, 1);
     const r = await this.request(url, {
       method: "POST",
       redirect: "error",
@@ -114,7 +116,11 @@ export class ToolExecutor {
           ],
         },
       }),
+    }).catch((error) => {
+      if (usageId) context.usage?.updateRequest(usageId, { status: "failed", endedAt: new Date().toISOString() });
+      throw error;
     });
+    if (usageId) context.usage?.updateRequest(usageId, { status: r.ok ? "completed" : "failed", endedAt: new Date().toISOString() });
     if (!r.ok) {
       await r.body?.cancel();
       throw new Error(`Function server returned HTTP ${r.status}.`);

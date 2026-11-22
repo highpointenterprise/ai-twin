@@ -83,6 +83,7 @@ export interface ConversationSnapshot {
   deadline: number;
 }
 export interface ToolContext {
+  usage?: UsageMeter;
   snapshot?: ConversationSnapshot;
   callSid: string;
   signal: AbortSignal;

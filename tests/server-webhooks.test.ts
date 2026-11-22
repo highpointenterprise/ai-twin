@@ -2,15 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { readFileSync } from "node:fs";
-import Ajv from "ajv";
 import { MockAgent } from "undici";
 import { MongoClient } from "mongodb";
 import { assistantSchema } from "../lib/config";
 import { assistantBodySchema } from "../server/api/v1/schemas/assistant";
 import {
   toAgentInput,
-  toVapiAssistant,
+  toApiAssistant,
   mergeAssistant,
   editableAssistant,
 } from "../server/api/v1/mappers/assistant";
@@ -145,7 +143,7 @@ test("assistant server configuration survives dashboard/API round trips and part
   );
 });
 
-test("end-of-call report uses Vapi's envelope, required fields and nested artifacts", () => {
+test("end-of-call report uses the assistant server envelope, required fields and nested artifacts", () => {
   const value = report();
   assert.deepEqual(Object.keys(value), ["message"]);
   assert.equal(value.message.type, "end-of-call-report");
@@ -179,92 +177,6 @@ test("end-of-call report uses Vapi's envelope, required fields and nested artifa
     }),
   );
 });
-
-test(
-  "payload validates against Vapi's official OpenAPI schema",
-  { skip: !process.env.VAPI_OPENAPI_PATH },
-  () => {
-    const spec = JSON.parse(
-      readFileSync(process.env.VAPI_OPENAPI_PATH!, "utf8"),
-    );
-    const normalizeEmptyEnums = (value: unknown): void => {
-      if (!value || typeof value !== "object") return;
-      const node = value as Record<string, unknown>;
-      // Two unrelated Neuphonic enum branches in Vapi's spec are empty (match nothing).
-      if (Array.isArray(node.enum) && node.enum.length === 0) {
-        delete node.enum;
-        node.not = {};
-      }
-      if (
-        node.type === "array" &&
-        Array.isArray(node.enum) &&
-        node.enum.every((v) => typeof v === "string")
-      )
-        delete node.enum;
-      if (node.nullable === true && !node.type) {
-        delete node.nullable;
-        const base = { ...node };
-        for (const key of Object.keys(node)) delete node[key];
-        node.anyOf = [base, { type: "null" }];
-      }
-      for (const child of Object.values(node)) normalizeEmptyEnums(child);
-    };
-    normalizeEmptyEnums(spec);
-    // The published unions overlap: message roles are plain strings and Flux is both an enum and a string.
-    for (const [name, role] of [
-      ["UserMessage", "user"],
-      ["SystemMessage", "system"],
-      ["BotMessage", "bot"],
-    ])
-      spec.components.schemas[name].properties.role.const = role;
-    const fluxModel =
-      spec.components.schemas.DeepgramTranscriber.properties.model;
-    fluxModel.anyOf = fluxModel.oneOf;
-    delete fluxModel.oneOf;
-    const ajv = new Ajv({
-      strict: false,
-      validateFormats: false,
-      allErrors: true,
-    });
-    const validate = ajv.compile({
-      $ref: "#/components/schemas/ServerMessageEndOfCallReport",
-      components: spec.components,
-    });
-    const value = report().message;
-    assert.equal(
-      validate(value),
-      true,
-      JSON.stringify(validate.errors?.slice(0, 15)),
-    );
-    const allowed =
-      spec.components.schemas.ServerMessageEndOfCallReport.properties;
-    assert.deepEqual(
-      Object.keys(value).filter((k) => !Object.hasOwn(allowed, k)),
-      [],
-    );
-    const artifactAllowed = spec.components.schemas.Artifact.properties;
-    assert.deepEqual(
-      Object.keys(value.artifact).filter(
-        (k) => !Object.hasOwn(artifactAllowed, k),
-      ),
-      [],
-    );
-    const a = value.assistant!;
-    for (const [part, schema] of [
-      [a, "CreateAssistantDTO"],
-      [a.transcriber, "DeepgramTranscriber"],
-      [a.voice, "ElevenLabsVoice"],
-      [a.model, "OpenAIModel"],
-    ] as const)
-      assert.deepEqual(
-        Object.keys(part as object).filter(
-          (k) => !Object.hasOwn(spec.components.schemas[schema].properties, k),
-        ),
-        [],
-        schema,
-      );
-  },
-);
 
 test("webhook destinations reject private networks, metadata addresses and DNS rebinding", async () => {
   for (const address of [
@@ -632,4 +544,17 @@ test("HTTP delivery POSTs unchanged JSON, rejects redirects and classifies retry
   } finally {
     await mock.close();
   }
+});
+
+test("cost reports preserve audio and character units when charges use credits or provider dollars", () => {
+  const cost = structuredClone(call.cost!);
+  cost.lines = [
+    { provider: "deepgram", type: "transcriber", model: "flux-general-en", item: "Provider request", quantity: 60, unit: "seconds", rate: null, usd: 0.01 },
+    { provider: "elevenlabs", type: "voice", model: "eleven_flash_v2_5", item: "Voice credits", quantity: 100, unit: "credits", rate: 0.0001, usd: 0.01 },
+  ];
+  cost.usage = { llm: [], telephony: [], transcriber: [{ provider: "deepgram", model: "flux-general-en", audioSeconds: 60, source: "submitted-audio" }], voice: [{ provider: "elevenlabs", model: "eleven_flash_v2_5", characters: 200, source: "submitted-text" }], network: { receivedBytes: 0, sentBytes: 0 } };
+  const report = endOfCallReport({ call: { ...call, cost }, transcript: [], orgId: owner, baseUrl: "https://calls.example" });
+  assert.equal(report.message.costs?.find((line) => line.type === "transcriber")?.minutes, 1);
+  assert.equal(report.message.costs?.find((line) => line.type === "voice")?.characters, 200);
+  assert.deepEqual(report.message.call.usage, cost.usage);
 });

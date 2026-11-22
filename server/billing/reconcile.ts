@@ -46,7 +46,8 @@ export async function reconcileCallCost(input: {
     const provider = await input.getProviderUsage(record.sid);
     durationSec = nonnegative(provider.duration) ?? meter.telephony.get(record.sid)?.durationSeconds ?? durationSec;
     const price = provider.price !== null && provider.price.trim() !== "" && Number.isFinite(Number(provider.price)) ? Math.abs(Number(provider.price)) : null;
-    meter.setTelephony({ callSid: record.sid, durationSeconds: durationSec, price, currency: provider.priceUnit, source: "provider" });
+    const previous = meter.telephony.get(record.sid);
+    meter.setTelephony({ callSid: record.sid, durationSeconds: durationSec, price: price ?? previous?.price ?? null, currency: price !== null ? provider.priceUnit : previous?.currency ?? provider.priceUnit, source: "provider" });
     if (price === null || !provider.priceUnit || nonnegative(provider.duration) === undefined) retryReasons.push("Provider charge or duration is pending.");
   } catch {
     retryReasons.push("Provider usage lookup failed.");
@@ -58,6 +59,7 @@ export async function reconcileCallCost(input: {
       recordingDurationEstimated: record.recordingDurationSec === undefined,
     } : {}),
     conference: !!record.transferId,
+    artifactBytes: record.artifact ? Object.values(record.artifact).reduce((sum, artifact) => sum + (artifact?.size ?? 0), 0) : undefined,
   }, input.rates, input.hosting);
   cost.reconciliationStatus = retryReasons.length ? "pending" : "complete";
   if (retryReasons.length) {

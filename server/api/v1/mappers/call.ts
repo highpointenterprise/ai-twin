@@ -3,7 +3,7 @@ import type { StoredCall } from "../../../storage/calls";
 import type { CallRequestDocument } from "../repositories/call-requests";
 import type { PhoneNumberDocument } from "../repositories/resources";
 
-export type VapiCallStatus = "scheduled" | "queued" | "ringing" | "in-progress" | "forwarding" | "ended";
+export type ApiCallStatus = "scheduled" | "queued" | "ringing" | "in-progress" | "forwarding" | "ended";
 
 export interface CallViewInput {
   orgId: string;
@@ -31,7 +31,7 @@ const ENDED_REASONS: Readonly<Record<string, string>> = {
   "speech-provider-error": "pipeline-error-eleven-labs-voice-failed",
 };
 
-export const vapiEndedReason = (raw: string | undefined, status: VapiCallStatus): string | undefined => {
+export const callEndedReason = (raw: string | undefined, status: ApiCallStatus): string | undefined => {
   if (status !== "ended") return undefined;
   if (!raw) return "customer-ended-call";
   if (raw.startsWith("transfer-") || raw.includes("transfer")) return "assistant-forwarded-call";
@@ -40,7 +40,7 @@ export const vapiEndedReason = (raw: string | undefined, status: VapiCallStatus)
   return ENDED_REASONS[raw] ?? raw;
 };
 
-export const vapiStatus = (request?: CallRequestDocument, call?: StoredCall): VapiCallStatus => {
+export const callStatus = (request?: CallRequestDocument, call?: StoredCall): ApiCallStatus => {
   if (request?.phase === "scheduled") return "scheduled";
   if (request?.phase === "queued" || request?.phase === "dialing") return "queued";
   if (request?.phase === "failed") return "ended";
@@ -66,6 +66,7 @@ const costView = (cost: CallCost | undefined) => {
   const breakdown = cost.costBreakdown;
   return {
     cost: cost.totalUsd,
+    costSummary: { status: cost.status, reconciliationStatus: cost.reconciliationStatus, pricingVersion: cost.pricingVersion, reportedUsd: cost.reportedUsd, calculatedUsd: cost.calculatedUsd, estimatedUsd: cost.estimatedUsd, knownSubtotalUsd: cost.totalUsd, unpricedItems: cost.unpricedItems },
     ...(breakdown
       ? {
           costBreakdown: {
@@ -73,7 +74,7 @@ const costView = (cost: CallCost | undefined) => {
             stt: breakdown.stt,
             llm: breakdown.llm,
             tts: breakdown.tts,
-            vapi: breakdown.hosting,
+            platform: breakdown.hosting,
             total: breakdown.total,
             llmPromptTokens: breakdown.llmPromptTokens,
             llmCompletionTokens: breakdown.llmCompletionTokens,
@@ -83,10 +84,10 @@ const costView = (cost: CallCost | undefined) => {
         }
       : {}),
     costs: cost.lines.map((line) => ({
-      type: line.type === "hosting" ? "vapi" : (line.type ?? "model"),
+      type: line.type === "hosting" ? "platform" : (line.type ?? "model"),
       provider: line.provider,
-      cost: line.usd ?? 0,
-      ...(line.unit === "minute" || line.unit === "minutes" ? { minutes: line.quantity } : {}),
+      cost: line.usd, basis: line.basis,
+      ...(line.unit === "min" || line.unit === "minute" || line.unit === "minutes" ? { minutes: line.quantity } : {}),
     })),
   };
 };
@@ -133,10 +134,10 @@ const artifactView = (id: string, baseUrl: string, call: StoredCall | undefined,
   };
 };
 
-export const toVapiCall = (input: CallViewInput): Record<string, unknown> => {
+export const toApiCall = (input: CallViewInput): Record<string, unknown> => {
   const { request, call, orgId, baseUrl } = input;
   const id = request?.id ?? call!.id;
-  const status = vapiStatus(request, call);
+  const status = callStatus(request, call);
   const outbound = request ? true : call!.direction === "outbound";
   const number = request ? request.customer.number : outbound ? call!.to : call!.from;
   const ownNumber = request ? request.from : outbound ? call!.from : call!.to;
@@ -153,7 +154,7 @@ export const toVapiCall = (input: CallViewInput): Record<string, unknown> => {
     type: outbound ? "outboundPhoneCall" : "inboundPhoneCall",
     status,
     ...(status === "ended"
-      ? { endedReason: failure?.reason ?? vapiEndedReason(call?.endedReason, status) }
+      ? { endedReason: failure?.reason ?? callEndedReason(call?.endedReason, status) }
       : {}),
     ...(failure ? { endedMessage: failure.message } : {}),
     ...(request?.name ? { name: request.name } : {}),

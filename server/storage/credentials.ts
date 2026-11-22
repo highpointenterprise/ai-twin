@@ -56,7 +56,7 @@ export class MongoTwilioCredentialStore {
   private readonly key: Buffer;
   private saved?: TwilioCredentials;
   private revision = 0;
-  constructor(db: Db, encryptionKey: string) {
+  constructor(private readonly db: Db, encryptionKey: string) {
     this.collection = db.collection<CredentialDocument>("providerCredentials");
     this.key = credentialKey(encryptionKey);
   }
@@ -77,12 +77,22 @@ export class MongoTwilioCredentialStore {
     const parsed = twilioCredentialsSchema.parse(credentials);
     this.revision++;
     const now = new Date();
+    if (this.saved && this.saved.accountSid !== parsed.accountSid) {
+      await this.db.collection<{ _id: string; envelope: CredentialEnvelope }>("provider_credential_accounts").updateOne(
+        { _id: this.saved.accountSid }, { $set: { envelope: encryptCredentials(this.saved, this.key) } }, { upsert: true });
+    }
     await this.collection.updateOne(
       { provider: "twilio" },
       { $set: { envelope: encryptCredentials(parsed, this.key), updatedAt: now }, $setOnInsert: { provider: "twilio", createdAt: now } },
       { upsert: true },
     );
     this.saved = parsed;
+  }
+  async forAccount(accountSid: string): Promise<TwilioCredentials | undefined> {
+    await this.refresh();
+    if (this.saved?.accountSid === accountSid) return { ...this.saved };
+    const saved = await this.db.collection<{ _id: string; envelope: CredentialEnvelope }>("provider_credential_accounts").findOne({ _id: accountSid });
+    return saved ? decryptCredentials(saved.envelope, this.key) : undefined;
   }
   /** Import only into an empty provider slot; rerunning a migration never replaces newer credentials. */
   async importIfAbsent(credentials: TwilioCredentials): Promise<boolean> {

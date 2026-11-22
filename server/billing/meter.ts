@@ -1,4 +1,5 @@
-import type { CallUsage, LlmUsageTotals, TelephonyUsage } from "../../lib/types";
+import { randomUUID } from "node:crypto";
+import type { CallUsage, LlmUsageTotals, TelephonyUsage, ProviderUsageRequest } from "../../lib/types";
 
 export interface LlmUsage {
   promptTokens: number;
@@ -21,10 +22,27 @@ export class UsageMeter {
   readonly llm = new Map<string, LlmUsageTotals>();
   readonly telephony = new Map<string, TelephonyUsage>();
   private readonly requests = new Set<string>();
+  readonly providerRequests = new Map<string, ProviderUsageRequest>();
+  startRequest(provider: string, model: string, kind: ProviderUsageRequest["kind"], unit: ProviderUsageRequest["unit"]): string {
+    const id = randomUUID();
+    this.providerRequests.set(id, { id, provider, model, kind, unit, quantity: 0, startedAt: new Date().toISOString(), status: "started" });
+    this.changed();
+    return id;
+  }
+  updateRequest(id: string, fields: Partial<Pick<ProviderUsageRequest, "providerRequestId" | "status" | "endedAt">>): void {
+    const entry = this.providerRequests.get(id);
+    if (entry) { Object.assign(entry, fields); this.changed(); }
+  }
+  addRequestUnits(id: string, quantity: number): void {
+    const entry = this.providerRequests.get(id);
+    if (entry) { entry.quantity += count(quantity); this.changed(); }
+  }
   private readonly unmetered = new Map<string, { provider: string; model: string; reason: string }>();
   private readonly listeners = new Set<(usage: CallUsage) => void>();
   netInBytes = 0;
   netOutBytes = 0;
+  mediaSeconds?: number;
+  addMediaSeconds(seconds: number): void { this.mediaSeconds = (this.mediaSeconds ?? 0) + count(seconds); this.changed(); }
   subscribe(listener: (usage: CallUsage) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -39,13 +57,15 @@ export class UsageMeter {
     this.unmetered.set(`${provider}:${model}:${reason}`, { provider, model, reason });
     this.changed();
   }
-  addStt(model: string, seconds: number): void {
+  addStt(model: string, seconds: number, requestId?: string): void {
     this.sttSeconds.set(model, (this.sttSeconds.get(model) ?? 0) + count(seconds));
     this.changed();
+    if (requestId) this.addRequestUnits(requestId, seconds);
   }
-  addTts(model: string, chars: number): void {
+  addTts(model: string, chars: number, requestId?: string): void {
     this.ttsChars.set(model, (this.ttsChars.get(model) ?? 0) + count(chars));
     this.changed();
+    if (requestId) this.addRequestUnits(requestId, chars);
   }
   addLlm(model: string, usage: LlmUsage): void {
     const provider = usage.provider ?? (model.includes(":") ? model.split(":", 1)[0] : "openai");
@@ -89,6 +109,8 @@ export class UsageMeter {
   }
   snapshot(): CallUsage {
     return {
+      requests: [...this.providerRequests.values()].map((entry) => ({ ...entry })),
+      ...(this.mediaSeconds !== undefined ? { mediaSeconds: this.mediaSeconds } : {}),
       unmetered: [...this.unmetered.values()].map((entry) => ({ ...entry })),
       llm: [...this.llm.values()].map((entry) => ({ ...entry })),
       transcriber: [...this.sttSeconds].map(([model, audioSeconds]) => ({ provider: "deepgram", model, audioSeconds, source: "submitted-audio" })),
@@ -98,6 +120,9 @@ export class UsageMeter {
     };
   }
   restore(usage: CallUsage): void {
+    this.mediaSeconds = usage.mediaSeconds;
+    this.requests.clear(); this.providerRequests.clear();
+    for (const entry of usage.requests ?? []) this.providerRequests.set(entry.id, { ...entry });
     this.llm.clear(); this.sttSeconds.clear(); this.ttsChars.clear(); this.telephony.clear(); this.unmetered.clear();
     for (const entry of usage.unmetered ?? []) this.unmetered.set(`${entry.provider}:${entry.model}:${entry.reason}`, { ...entry });
     for (const entry of usage.llm) this.llm.set(`${entry.provider}:${entry.model}`, { ...entry });

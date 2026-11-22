@@ -1,5 +1,6 @@
+import { PricingPolicies } from "../billing/policy";
 import { env } from "../../lib/env";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isCallUsage, UsageAccumulator } from "../billing/merge-usage";
 import type { Collection, Db, Filter, Document } from "mongodb";
 import type { AgentConfig, CallCost, CallUsage, CallRecord, CallStatus, CallTraceView, TraceEvent, TranscriptLine } from "../../lib/types";
@@ -10,6 +11,8 @@ export type ArtifactKind = "transcript" | "messages" | "logs" | "recording" | "m
 export interface StoredCall extends CallRecord {
   id: string;
   assistantId: string;
+  phoneNumberId?: string | null;
+  twilioAccountSid?: string;
   /** Configuration captured when the call starts; later assistant edits do not alter it. */
   assistant?: AgentConfig;
   tools?: ToolConfig[];
@@ -33,7 +36,7 @@ interface EventDocument { _id: string; callId: string; at: number; event: string
 interface TranscriptDocument { _id: string; callId: string; at: number; role: TranscriptLine["role"]; text: string; latencyMs?: number }
 interface UsageDocument { _id: string; callId: string; revision: number; usage: unknown; updatedAt: Date }
 interface UsageSegmentDocument { _id: string; callId: string; producerId: string; revision: number; usage: CallUsage; updatedAt: Date }
-interface CostDocument { _id: string; callId: string; cost: CallCost; updatedAt: Date; storageRevision?: number }
+interface CostDocument { userId?: string; assistantId?: string; phoneNumber?: string; phoneNumberId?: string | null; parentCallId?: string | null; occurredAt?: Date; _id: string; callId: string; cost: CallCost; updatedAt: Date; storageRevision?: number }
 export interface CallListOptions { limit?: number; cursor?: string; assistantId?: string; status?: CallStatus }
 export interface TraceOptions { limit?: number; eventsCursor?: string; transcriptCursor?: string }
 export interface StoredTrace extends CallTraceView {
@@ -72,7 +75,7 @@ export class MongoCallRepository {
   private readonly usage: Collection<UsageDocument>;
   private readonly usageSegments: Collection<UsageSegmentDocument>;
   private readonly costs: Collection<CostDocument>;
-  constructor(private readonly db: Db) {
+  constructor(private readonly db: Db, private readonly accountSid?: () => string) {
     this.calls = db.collection("calls");
     this.events = db.collection("call_events");
     this.transcripts = db.collection("call_transcripts");
@@ -94,11 +97,18 @@ export class MongoCallRepository {
       this.usage.createIndex({ callId: 1 }, { unique: true }),
       this.usageSegments.createIndex({ callId: 1, producerId: 1 }, { unique: true }),
       this.costs.createIndex({ callId: 1 }, { unique: true }),
+      this.costs.createIndex({ userId: 1, occurredAt: -1, callId: -1 }),
+      this.costs.createIndex({ userId: 1, assistantId: 1, occurredAt: -1 }),
+      this.db.collection("call_cost_history").createIndex({ callId: 1, recordedAt: -1 }),
     ]);
   }
   async create(record: NewCall): Promise<StoredCall> {
     const now = record.updatedAt ?? Date.now();
+    const phoneNumber = record.direction === "inbound" ? record.to : record.from;
+    const phone = await this.db.collection("phone_numbers").findOne({ orgId: env.WORKSPACE_USER_ID, number: phoneNumber }, { projection: { id: 1 } });
     const document: StoredCall = {
+      phoneNumberId: phone?.id ?? null,
+      ...(this.accountSid?.() ? { twilioAccountSid: this.accountSid() } : {}),
       ...record,
       ...(env.WORKSPACE_USER_ID ? { userId: env.WORKSPACE_USER_ID } : {}),
       id: record.sid,
@@ -110,6 +120,7 @@ export class MongoCallRepository {
       ...(["connected", "in-progress"].includes(record.status) && !record.startedAt ? { startedAt: new Date(now).toISOString() } : {}),
       ...(TERMINAL.includes(record.status) && !record.endedAt ? { endedAt: new Date(now).toISOString() } : {}),
     };
+    await new PricingPolicies(this.db).forCall(record.sid);
     // Duplicate callbacks must never recreate or reset an existing call.
     await this.calls.updateOne({ _id: record.sid }, { $setOnInsert: document }, { upsert: true });
     return (await this.get(record.sid))!;
@@ -170,6 +181,8 @@ export class MongoCallRepository {
       this.usage.deleteMany({ callId: sid }),
       this.usageSegments.deleteMany({ callId: sid }),
       this.costs.deleteMany({ callId: sid }),
+      this.db.collection("call_cost_history").deleteMany({ callId: sid }),
+      this.db.collection<{ _id: string }>("call_pricing_snapshots").deleteOne({ _id: sid }),
       this.db.collection("call_billing_usage").deleteOne({ _id: sid } as never),
       this.db.collection("recording_requests").deleteOne({ _id: sid } as never),
     ]);
@@ -302,6 +315,7 @@ export class MongoCallRepository {
   async saveCost(sid: string, cost: CallCost, usage?: unknown, expectedRevision?: number): Promise<void> {
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0))
       throw new Error("Invalid billing revision.");
+    const previousRecord = await this.get(sid);
     const extended = cost as CallCost & { costBreakdown?: unknown; costs?: unknown[] };
     const filter: Filter<StoredCall & { _id: string }> = { _id: sid };
     if (expectedRevision !== undefined) filter.$expr = { $eq: [{ $ifNull: ["$storageRevision", 0] }, expectedRevision] };
@@ -323,6 +337,20 @@ export class MongoCallRepository {
         storageRevision: { $max: [expectedRevision, { $ifNull: ["$storageRevision", -1] }] },
         updatedAt: { $cond: [current, new Date(), "$updatedAt"] },
       } }], { upsert: true });
+    }
+    const record = await this.get(sid);
+    if (record) {
+      const phoneNumber = record.direction === "inbound" ? record.to : record.from;
+      const phone = await this.db.collection("phone_numbers").findOne({ orgId: env.WORKSPACE_USER_ID, number: phoneNumber }, { projection: { id: 1 } });
+      const attribution = { userId: env.WORKSPACE_USER_ID, assistantId: record.assistantId, phoneNumber,
+        phoneNumberId: record.phoneNumberId ?? phone?.id ?? null, parentCallId: record.parentCallSid ?? null, occurredAt: new Date(record.endedAt ?? record.createdAt) };
+      await this.costs.updateOne({ _id: sid }, { $set: attribution });
+      for (const version of [previousRecord?.cost, cost]) {
+        if (!version) continue;
+        const { calculatedAt: _calculatedAt, ...stable } = version;
+        const digest = createHash("sha256").update(JSON.stringify(stable)).digest("hex");
+        await this.db.collection<{ _id: string } & Record<string, unknown>>("call_cost_history").updateOne({ _id: `${sid}:${digest}` }, { $setOnInsert: { ...attribution, callId: sid, cost: version, recordedAt: new Date(version.calculatedAt ?? Date.now()) } }, { upsert: true });
+      }
     }
     if (usage !== undefined) await this.saveUsage(sid, usage);
   }

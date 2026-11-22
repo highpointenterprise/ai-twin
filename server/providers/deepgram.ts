@@ -39,10 +39,15 @@ export const deepgramTranscriberFactory =
         "eager_eot_threshold",
         String(Math.min(config.eagerEotThreshold, config.eotThreshold)),
       );
+    const usageId = trace?.usage?.startRequest("deepgram", config.model, "transcriber", "seconds");
     const socket = connect(`wss://api.deepgram.com/v2/listen?${query}`, {
       headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` },
       agent: providerAgent(),
       handshakeTimeout: 10000,
+    });
+    socket.on("upgrade", (response) => {
+      const id = response.headers["dg-request-id"];
+      if (usageId && typeof id === "string") trace?.usage?.updateRequest(usageId, { providerRequestId: id });
     });
     const bytesPerSecond =
       format.sampleRate * (format.encoding === "mulaw" ? 1 : 2);
@@ -66,7 +71,7 @@ export const deepgramTranscriberFactory =
       });
       for (const b of pending.splice(0)) {
         socket.send(b);
-        trace?.usage?.addStt(config.model, b.length / bytesPerSecond);
+        trace?.usage?.addStt(config.model, b.length / bytesPerSecond, usageId);
       }
     });
     socket.on("unexpected-response", (_req, response) => {
@@ -81,10 +86,12 @@ export const deepgramTranscriberFactory =
     socket.on("message", (raw) => {
       const d = parseJson(raw.toString()) as {
         type?: string;
+        request_id?: string;
         event?: string;
         transcript?: string;
         description?: string;
       } | null;
+      if (usageId && typeof d?.request_id === "string") trace?.usage?.updateRequest(usageId, { providerRequestId: d.request_id });
       if (d?.type === "Error") {
         fail(new Error(redactText(d.description || "Deepgram error")));
         return;
@@ -131,6 +138,7 @@ export const deepgramTranscriberFactory =
             `Deepgram connection closed unexpectedly (code ${code}). ${redactText(reason.toString()).slice(0, 300)}`,
           ),
         );
+      if (usageId) trace?.usage?.updateRequest(usageId, { endedAt: new Date().toISOString(), status: failed ? "failed" : "completed" });
     });
     return {
       sendAudio: (chunk) => {
@@ -153,7 +161,7 @@ export const deepgramTranscriberFactory =
         }
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(chunk);
-          trace?.usage?.addStt(config.model, chunk.length / bytesPerSecond);
+          trace?.usage?.addStt(config.model, chunk.length / bytesPerSecond, usageId);
         } else if (
           socket.readyState === WebSocket.CONNECTING &&
           pending.length < 1500
@@ -168,6 +176,7 @@ export const deepgramTranscriberFactory =
       },
       close: () => {
         closed = true;
+        if (usageId) trace?.usage?.updateRequest(usageId, { endedAt: new Date().toISOString(), status: failed ? "failed" : "completed" });
         pending.length = 0;
         socket.close();
       },

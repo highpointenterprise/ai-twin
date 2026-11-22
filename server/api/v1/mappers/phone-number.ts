@@ -1,6 +1,6 @@
 import type { PhoneNumberDocument } from "../repositories/resources";
 
-export const toVapiPhoneNumber = (document: PhoneNumberDocument, accountSid: string | undefined): Record<string, unknown> => ({
+export const toApiPhoneNumber = (document: PhoneNumberDocument, accountSid: string | undefined): Record<string, unknown> => ({
   id: document.id,
   orgId: document.orgId,
   createdAt: document.createdAt,
