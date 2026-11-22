@@ -95,6 +95,7 @@ export interface CallRecord {
   transferId?: string;
   operatorCallSid?: string;
   parentCallSid?: string;
+  requestId?: string;
   cost?: CallCost;
 }
 

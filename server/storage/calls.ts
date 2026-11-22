@@ -5,7 +5,7 @@ import type { AgentConfig, CallCost, CallUsage, CallRecord, CallStatus, CallTrac
 import type { ObjectStore, StoredObject } from "./objects";
 import type { ToolConfig } from "../../lib/config";
 
-export type ArtifactKind = "transcript" | "messages" | "logs" | "recording";
+export type ArtifactKind = "transcript" | "messages" | "logs" | "recording" | "monoRecording" | "customerRecording" | "assistantRecording";
 export interface StoredCall extends CallRecord {
   id: string;
   assistantId: string;
@@ -71,7 +71,7 @@ export class MongoCallRepository {
   private readonly usage: Collection<UsageDocument>;
   private readonly usageSegments: Collection<UsageSegmentDocument>;
   private readonly costs: Collection<CostDocument>;
-  constructor(db: Db) {
+  constructor(private readonly db: Db) {
     this.calls = db.collection("calls");
     this.events = db.collection("call_events");
     this.transcripts = db.collection("call_transcripts");
@@ -86,6 +86,7 @@ export class MongoCallRepository {
       this.calls.createIndex({ assistantId: 1, createdAt: -1, sid: -1 }),
       this.calls.createIndex({ status: 1, createdAt: -1, sid: -1 }),
       this.calls.createIndex({ parentCallSid: 1 }, { sparse: true }),
+      this.calls.createIndex({ requestId: 1 }, { unique: true, sparse: true }),
       this.calls.createIndex({ storagePending: 1, storageDispatchedAt: 1, endedAt: 1, sid: 1 }, { partialFilterExpression: { storagePending: true } }),
       this.events.createIndex({ callId: 1, at: -1, _id: -1 }),
       this.transcripts.createIndex({ callId: 1, at: -1, _id: -1 }),
@@ -130,6 +131,43 @@ export class MongoCallRepository {
     const last = items.at(-1);
     return { items, nextCursor: result.length > limit && last ? cursor(last.createdAt, last.sid) : null };
   }
+  async findMany(filter: Filter<Document>, limit: number): Promise<StoredCall[]> {
+    if (limit < 1) return [];
+    const rows = await this.calls
+      .find(filter as Filter<StoredCall & { _id: string }>, { projection: { _id: 0 } })
+      .sort({ createdAt: -1, sid: -1 })
+      .limit(limit)
+      .toArray();
+    return rows as StoredCall[];
+  }
+  async getMany(sids: string[]): Promise<Map<string, StoredCall>> {
+    if (!sids.length) return new Map();
+    const rows = await this.calls.find({ _id: { $in: sids } }, { projection: { _id: 0 } }).toArray();
+    return new Map(rows.map((row) => [row.sid, row as StoredCall]));
+  }
+  async transcript(sid: string, limit = 5000): Promise<TranscriptLine[]> {
+    const rows = await this.transcripts.find({ callId: sid }).sort({ at: 1, _id: 1 }).limit(limit).toArray();
+    return rows.map(({ at, role, text, latencyMs }) => ({ at, role, text, ...(latencyMs !== undefined ? { latencyMs } : {}) }));
+  }
+  async findByRequestId(requestId: string): Promise<StoredCall | undefined> {
+    return (await this.calls.findOne({ requestId }, { projection: { _id: 0 } })) ?? undefined;
+  }
+  async attachRequest(sid: string, requestId: string): Promise<void> {
+    await this.calls.updateOne({ _id: sid, requestId: { $exists: false } }, { $set: { requestId, updatedAt: Date.now() } });
+  }
+  async purge(sid: string, objects: ObjectStore): Promise<void> {
+    await objects.deletePrefix(`calls/${encodeURIComponent(sid)}/`);
+    await Promise.all([
+      this.events.deleteMany({ callId: sid }),
+      this.transcripts.deleteMany({ callId: sid }),
+      this.usage.deleteMany({ callId: sid }),
+      this.usageSegments.deleteMany({ callId: sid }),
+      this.costs.deleteMany({ callId: sid }),
+      this.db.collection("call_billing_usage").deleteOne({ _id: sid } as never),
+      this.db.collection("recording_requests").deleteOne({ _id: sid } as never),
+    ]);
+    await this.calls.deleteOne({ _id: sid });
+  }
   async children(sid: string, maximum = 1000): Promise<StoredCall[]> {
     const limit = limitTo(maximum, 1000);
     const records = await this.calls.find({ parentCallSid: sid }, { projection: { _id: 0 } })
@@ -139,7 +177,7 @@ export class MongoCallRepository {
   }
   async patch(sid: string, fields: Partial<CallRecord>): Promise<void> {
     // Identity and state transitions have separate methods; reject accidental overwrites.
-    const allowed = ["endedReason", "answeredBy", "screeningEncountered", "transferStatus", "transferId", "operatorCallSid", "parentCallSid", "cost"] as const;
+    const allowed = ["endedReason", "answeredBy", "screeningEncountered", "transferStatus", "transferId", "operatorCallSid", "parentCallSid", "requestId", "cost"] as const;
     const patch: Document = { updatedAt: Date.now() };
     for (const name of allowed) if (fields[name] !== undefined) patch[name] = fields[name];
     await this.calls.updateOne({ _id: sid }, { $set: patch });

@@ -13,6 +13,7 @@ export interface CallContext {
   resumeTransferId?: string;
   endAfterFirstMessage?: boolean;
   sid?: string;
+  requestId?: string;
   from?: string;
   to?: string;
 }

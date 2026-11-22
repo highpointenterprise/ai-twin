@@ -3,6 +3,9 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectsCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
@@ -136,6 +139,26 @@ export class ObjectStore {
     if (!response.Body || !(response.Body instanceof Readable))
       throw new Error("Object storage returned an invalid response body.");
     return response.Body;
+  }
+  async deletePrefix(prefix: string): Promise<void> {
+    this.validateKey(prefix);
+    let token: string | undefined;
+    do {
+      const page = await this.client.send(new ListObjectsV2Command({ Bucket: this.options.bucket, Prefix: prefix, ContinuationToken: token }));
+      const keys = (page.Contents ?? []).flatMap(item => item.Key ? [{ Key: item.Key }] : []);
+      if (keys.length) await this.client.send(new DeleteObjectsCommand({ Bucket: this.options.bucket, Delete: { Objects: keys, Quiet: true } }));
+      token = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (token);
+  }
+  async head(key: string): Promise<boolean> {
+    this.validateKey(key);
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
+      return true;
+    } catch (error) {
+      if ((error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404) return false;
+      throw error;
+    }
   }
   close(): void { this.client.destroy(); }
   private metadata(key: string, contentType: string, size: number): StoredObject {

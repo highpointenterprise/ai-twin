@@ -1,5 +1,5 @@
-import { errorDetail } from "./observability/diagnostics";
 import "dotenv/config";
+import { errorDetail } from "./observability/diagnostics";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { env, missingCallConfiguration } from "../lib/env";
@@ -43,6 +43,9 @@ import { ContextStore } from "./store/contexts";
 import { ToolExecutor } from "./tools/executor";
 import { TwilioSettings } from "./providers/twilio-settings";
 import { MongoTransferStore } from "./storage/transfers";
+import { createApiV1, createRootApp } from "./api/v1";
+import { deriveRecordings } from "./storage/recording-derivatives";
+import { metrics } from "./observability/metrics";
 import { MeetingService } from "./meetings/service";
 import { MeetingStore } from "./meetings/store";
 import { GoogleMeetBrowserDriver } from "./meetings/browser-driver";
@@ -198,6 +201,9 @@ async function main(): Promise<void> {
           "audio/wav",
         );
         await calls.setArtifact(sid, "recording", artifact);
+        await deriveRecordings(sid, artifact, objects, calls).catch((error) =>
+          logEvent("recording.derivation_failed", { sid, ...errorDetail(error) }),
+        );
         await calls.setRecordingUsage(
           sid,
           recordingSid,
@@ -344,7 +350,20 @@ async function main(): Promise<void> {
       artifacts.enqueue(sid, `recording-${recordingSid}`),
   };
   startupStage = "HTTP listeners";
-  const publicServer = createServer(createPublicApp(deps));
+  const api = await createApiV1({
+    db,
+    redis,
+    callState,
+    calls,
+    tools,
+    objects,
+    telephony,
+    twilioSettings,
+    registry,
+    traces,
+    contexts,
+  });
+  const publicServer = createServer(createRootApp(api, createPublicApp(deps)));
   const media = attachMediaServer(publicServer, {
     factory: (init) =>
       init.purpose === "warm-consultation"
@@ -362,7 +381,12 @@ async function main(): Promise<void> {
   publicServer.listen(env.PORT, () =>
     logEvent("server.public_listening", { port: env.PORT }),
   );
-  const admin = createAdminApp(deps).listen(env.ADMIN_PORT, "127.0.0.1", () =>
+  void api.dispatcher.start().catch((error) => logEvent("callqueue.start_failed", errorDetail(error)));
+  const adminApp = createAdminApp(deps);
+  adminApp.get("/metrics", (_req, res) => {
+    void metrics.render().then((body) => res.type("text/plain; version=0.0.4").send(body));
+  });
+  const admin = adminApp.listen(env.ADMIN_PORT, "127.0.0.1", () =>
     logEvent("server.admin_listening", { port: env.ADMIN_PORT }),
   );
   logEvent("configuration", {
@@ -384,6 +408,7 @@ async function main(): Promise<void> {
   const shutdown = (): Promise<void> =>
     (shutdownTask ??= (async () => {
       clearInterval(dispatchTimer);
+      await api.dispatcher.stop();
       // Stop admitting requests first, then allow accepted callbacks and socket close
       // handlers to finish before draining their writes and closing storage clients.
       const closeHttp = (server: typeof publicServer) =>

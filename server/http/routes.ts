@@ -832,6 +832,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
           from: b.From,
           to: b.To,
           status: "connected",
+          requestId: context.requestId,
         });
       registry.patch(b.CallSid, { answeredBy: b.AnsweredBy });
       const action = voicemailAction(
@@ -905,6 +906,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
             from: c.from ?? b.From,
             to: c.to ?? b.To,
             status: "initiating",
+            requestId: c.requestId,
           });
       }
       await registry.load(b.CallSid);

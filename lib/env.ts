@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { z } from "zod";
 import type { TwilioCredentials } from "./twilio";
 const schema = z.object({
@@ -72,6 +73,14 @@ const schema = z.object({
     .positive()
     .default(10000),
   HOSTING_EGRESS_USD_PER_GB: z.coerce.number().min(0).default(0),
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+  API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(600),
+  MAX_QUEUED_CALLS: z.coerce.number().int().positive().default(10000),
+  DISPATCH_POLL_MS: z.coerce.number().int().min(100).max(60000).default(1000),
+  DIAL_PARALLELISM: z.coerce.number().int().min(1).max(100).default(10),
+  CALL_START_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  FFMPEG_PATH: z.string().default("ffmpeg"),
+  RECORDING_CUSTOMER_CHANNEL: z.enum(["0", "1"]).default("0").transform(Number),
   MAX_CONCURRENT_MEETINGS: z.coerce.number().int().min(1).max(10).default(2),
 });
 export const env = schema.parse(process.env);

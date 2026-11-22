@@ -121,7 +121,10 @@ export class RedisCallState {
       return 1
     `, 1, `${this.prefix}:leases`, id, limit, ttlMs)) === 1;
   }
-  async release(id: string): Promise<void> { await this.redis.zrem(`${this.prefix}:leases`, id); }
+  async release(id: string): Promise<void> {
+    await this.redis.zrem(`${this.prefix}:leases`, id);
+    void this.redis.publish(`${this.prefix}:capacity`, id).catch(() => undefined);
+  }
   async activeCount(): Promise<number> {
     return await this.redis.eval(`
       local time = redis.call('TIME')

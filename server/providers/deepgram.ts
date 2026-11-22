@@ -156,7 +156,7 @@ export const deepgramTranscriberFactory =
           trace?.usage?.addStt(config.model, chunk.length / bytesPerSecond);
         } else if (
           socket.readyState === WebSocket.CONNECTING &&
-          pending.length < 250
+          pending.length < 1500
         )
           pending.push(chunk);
         else if (socket.readyState === WebSocket.CONNECTING)
