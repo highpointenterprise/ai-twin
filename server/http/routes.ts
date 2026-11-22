@@ -514,6 +514,12 @@ export const createAdminApp = (
       }
     }),
   );
+  app.use("/api/calls/:sid", (req, _res, next) => {
+    void registry.load(req.params.sid).then(record => {
+      if (!record) throw new HttpError(404, "Call not found.");
+      next();
+    }).catch(next);
+  });
   app.get(
     "/api/calls/:sid/transfer",
     handle(async (req, res) =>

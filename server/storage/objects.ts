@@ -15,6 +15,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface ObjectStoreOptions {
+  prefix?: string;
   endpoint: string;
   region: string;
   bucket: string;
@@ -66,6 +67,7 @@ export class ObjectStore {
     }
   }
   async put(key: string, body: string | Buffer | Uint8Array, contentType: string): Promise<StoredObject> {
+    key = this.scopedKey(key);
     this.validateKey(key);
     const data = typeof body === "string" ? Buffer.from(body) : body;
     await this.client.send(new PutObjectCommand({
@@ -76,6 +78,7 @@ export class ObjectStore {
   }
   /** Multipart uploads keep memory bounded when exporting long calls or recordings. */
   async putStream(key: string, input: AsyncIterable<Uint8Array | string>, contentType: string): Promise<StoredObject> {
+    key = this.scopedKey(key);
     this.validateKey(key);
     const created = await this.client.send(new CreateMultipartUploadCommand({
       Bucket: this.options.bucket, Key: key, ContentType: contentType,
@@ -125,6 +128,7 @@ export class ObjectStore {
     }
   }
   async signedUrl(key: string, expiresIn = 300): Promise<string> {
+    key = this.scopedKey(key);
     this.validateKey(key);
     if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 900)
       throw new Error("Download URLs must expire within 15 minutes.");
@@ -134,6 +138,7 @@ export class ObjectStore {
     }), { expiresIn });
   }
   async read(key: string): Promise<Readable> {
+    key = this.scopedKey(key);
     this.validateKey(key);
     const response = await this.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }));
     if (!response.Body || !(response.Body instanceof Readable))
@@ -141,6 +146,7 @@ export class ObjectStore {
     return response.Body;
   }
   async deletePrefix(prefix: string): Promise<void> {
+    prefix = this.scopedKey(prefix);
     this.validateKey(prefix);
     let token: string | undefined;
     do {
@@ -151,6 +157,7 @@ export class ObjectStore {
     } while (token);
   }
   async head(key: string): Promise<boolean> {
+    key = this.scopedKey(key);
     this.validateKey(key);
     try {
       await this.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
@@ -163,6 +170,13 @@ export class ObjectStore {
   close(): void { this.client.destroy(); }
   private metadata(key: string, contentType: string, size: number): StoredObject {
     return { key, bucket: this.options.bucket, contentType, size, createdAt: new Date().toISOString() };
+  }
+  private scopedKey(key: string): string {
+    const prefix = this.options.prefix;
+    if (!prefix) return key;
+    if (key.startsWith(prefix)) return key;
+    if (key.startsWith("workspaces/")) throw new Error("Object belongs to a different workspace.");
+    return `${prefix}${key}`;
   }
   private validateKey(key: string): void {
     if (!key || key.length > 1024 || key.startsWith("/") || key.split("/").includes(".."))

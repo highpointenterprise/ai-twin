@@ -32,8 +32,12 @@ const schema = z.object({
     .default("")
     .transform((v) => v.replace(/\/+$/, "")),
   STREAM_SECRET: z.string().default(""),
-  PORT: z.coerce.number().int().positive().default(8080),
-  ADMIN_PORT: z.coerce.number().int().positive().default(8081),
+  PORT: z.coerce.number().int().min(0).default(8080),
+  ADMIN_PORT: z.coerce.number().int().min(0).default(8081),
+  WORKSPACE_USER_ID: z.string().default(""),
+  AUTH_DATABASE: z.string().default(""),
+  OBJECT_PREFIX: z.string().default(""),
+  MAX_WORKSPACE_WORKERS: z.coerce.number().int().min(1).max(256).default(32),
   ADMIN_HOST: z.string().default("127.0.0.1"),
   AUTH_API_SECRET: z.string().default(""),
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),
@@ -119,7 +123,7 @@ export const missingCallConfiguration = (
       u.password ||
       u.search ||
       u.hash ||
-      u.pathname !== "/"
+      u.pathname !== (env.WORKSPACE_USER_ID ? `/workspaces/${env.WORKSPACE_USER_ID}` : "/")
     )
       throw new Error();
   } catch {

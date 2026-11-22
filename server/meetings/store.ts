@@ -1,3 +1,4 @@
+import { env } from "../../lib/env";
 import type { MeetingRecord, MeetingPhase } from "../../lib/meetings";
 import { JsonFile } from "../store/persistence";
 import { HttpError } from "../core/errors";
@@ -30,7 +31,7 @@ export class MeetingStore {
     return { ...r };
   }
   create(record: MeetingRecord): void {
-    this.records.unshift(record);
+    this.records.unshift({ ...record, ...(env.WORKSPACE_USER_ID ? { userId: env.WORKSPACE_USER_ID } : {}) });
     this.save();
   }
   update(id: string, phase: MeetingPhase, reason?: string): void {
