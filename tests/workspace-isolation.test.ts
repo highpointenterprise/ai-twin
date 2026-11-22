@@ -77,7 +77,7 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
     const response = await req(n, "/api/agents"); assert.equal(response.status, 200); assert.deepEqual(await response.json(), []);
     assert.equal((await (await req(n, "/api/health")).json()).twilio.configured, false);
   }
-  const agent = await (await req(0, "/api/agents", "POST", { name: "A private assistant", systemPrompt: "Private", userId: users[1].id, orgId: users[1].id })).json();
+  const agent = await (await req(0, "/api/agents", "POST", { name: "A private assistant", systemPrompt: "Private", server: { url: "https://a.example/webhook" }, userId: users[1].id, orgId: users[1].id })).json();
   assert.equal((await req(1, `/api/agents/${agent.id}`, "PUT", { name: "stolen", systemPrompt: "stolen" })).status, 404);
   assert.deepEqual(await (await req(1, "/api/agents")).json(), []);
   const tool = await (await req(0, "/api/tools", "POST", { name: "private_tool", description: "Private", type: "dtmf", toneDurationMs: 200, gapMs: 100 })).json();
@@ -88,9 +88,11 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   await calls.create({ sid: "CA-private-a", agentId: agent.id, from: "+12025550101", to: "+12025550102", direction: "outbound", status: "connected" });
   await calls.appendTranscript("CA-private-a", { role: "caller", at: Date.now(), text: "Private transcript" });
   assert.equal((await req(0, "/api/calls/CA-private-a")).status, 200);
+  assert.deepEqual(await (await req(0, "/api/calls/CA-private-a/server-events")).json(), []);
+  assert.equal(agent.server.url, "https://a.example/webhook");
   assert.deepEqual(await (await req(1, "/api/calls")).json(), []);
-  for (const path of ["", "/trace", "/usage", "/artifacts/logs", "/transfer"]) assert.equal((await req(1, `/api/calls/CA-private-a${path}`)).status, 404);
-  for (const path of ["end", "storage/retry", "transfer/retry"]) assert.equal((await req(1, `/api/calls/CA-private-a/${path}`, "POST", {})).status, 404);
+  for (const path of ["", "/trace", "/usage", "/artifacts/logs", "/transfer", "/server-events"]) assert.equal((await req(1, `/api/calls/CA-private-a${path}`)).status, 404);
+  for (const path of ["end", "storage/retry", "transfer/retry", "server-events/retry"]) assert.equal((await req(1, `/api/calls/CA-private-a/${path}`, "POST", {})).status, 404);
   assert.equal((await (await req(0, "/api/meetings")).json()).length, 1);
   assert.deepEqual(await (await req(1, "/api/meetings")).json(), []);
   for (const path of ["", "/trace"]) assert.equal((await req(1, `/api/meetings/${meetingId}${path}`)).status, 404);

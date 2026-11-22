@@ -245,6 +245,39 @@ export function AssistantSettings({
       {tab === "Advanced" && (
         <div className="fields">
           <fieldset>
+            <legend>Webhook server</legend>
+            <label>
+              Server URL
+              <input
+                type="url"
+                value={a.server.url}
+                maxLength={2048}
+                placeholder="https://example.com/webhook"
+                onChange={(e) =>
+                  set("server", { ...a.server, url: e.target.value })
+                }
+              />
+            </label>
+            <p className="hint">
+              Receives the End of Call Report as a JSON POST after call
+              processing completes. Leave blank to disable. Use a public HTTPS
+              endpoint.
+            </p>
+            {number(
+              "Webhook timeout (seconds)",
+              a.server.timeoutSeconds,
+              (timeoutSeconds) =>
+                set("server", { ...a.server, timeoutSeconds }),
+              1,
+              300,
+            )}
+            <p className="hint">
+              Temporary delivery failures are retried automatically. Your
+              endpoint should acknowledge promptly with a 2xx response and
+              deduplicate using the Idempotency-Key header.
+            </p>
+          </fieldset>
+          <fieldset>
             <legend>Start speaking plan</legend>
             <p className="hint">
               Smart endpointing is supplied by Deepgram Flux. This adds a pause

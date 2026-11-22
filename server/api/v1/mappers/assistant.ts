@@ -37,6 +37,7 @@ export const toAgentInput = (body: AssistantBody): AssistantInput => {
   const timeout = detection && detection !== "off" ? detection.machineDetectionTimeout : undefined;
   return assistantSchema.parse({
     name: body.name ?? DEFAULT_NAME,
+    server: body.server,
     systemPrompt: systemPrompt(body),
     firstMessage: body.firstMessage,
     firstMessageMode: body.firstMessageMode,
@@ -77,6 +78,7 @@ export const toVapiAssistant = (document: AssistantDocument): VapiAssistant => {
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
     name: document.name,
+    server: document.server ?? { url: "", timeoutSeconds: 20 },
     model: {
       provider: "openai",
       model: document.model,
