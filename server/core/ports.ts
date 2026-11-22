@@ -138,6 +138,16 @@ export interface TelephonyNumber {
   sid: string;
   phoneNumber: string;
   label: string;
+  capabilities?: { voice: boolean; sms: boolean; mms: boolean };
+  voiceUrl?: string;
+  voiceMethod?: string;
+  voiceApplicationSid?: string;
+  trunkSid?: string;
+  statusCallback?: string;
+  statusCallbackMethod?: string;
+  country?: string;
+  addressSid?: string;
+  bundleSid?: string;
 }
 
 export interface Telephony {

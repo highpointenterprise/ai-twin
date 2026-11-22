@@ -338,3 +338,13 @@ pre {
     min-width: 0;
   }
 }
+
+.phone-card, .phone-confirm {
+  padding: 1rem;
+  border: 1px solid var(--color-input);
+  border-radius: .75rem;
+}
+.phone-url { overflow-wrap: anywhere; }
+.phone-search-results { list-style: none; padding: 0; max-height: 24rem; overflow-y: auto; }
+.phone-search-results li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; padding: .75rem 0; border-bottom: 1px solid var(--color-input); }
+.phone-search-results small { display: block; }

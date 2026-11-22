@@ -10,7 +10,7 @@ import { api, apiList } from "@/app/components/api";
 import { MeetingsPanel } from "@/app/components/meetings-panel";
 import { DiagnosticsPanel } from "@/app/components/diagnostics-panel";
 import { Button } from "@/components/ui/button";
-import { TwilioConnection } from "@/app/components/twilio-connection";
+import { PhoneNumbersPanel } from "@/app/components/phone-numbers/panel";
 import type {
   TwilioConnectionResult,
   TwilioConnectionStatus,
@@ -38,7 +38,6 @@ export default function Page({
   const [toolEdit, setToolEdit] = useState<ToolConfig | "new" | null>(null);
   const [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
-    [saving, setSaving] = useState(false),
     [missing, setMissing] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false);
   const [twilio, setTwilio] = useState<TwilioConnectionStatus | null>(null);
@@ -284,106 +283,23 @@ export default function Page({
                   )}
                 </div>
               ))}
-            {section === "Phone numbers" && (
-              <div className="fields">
-                {loaded && (
-                  <TwilioConnection
-                    key={twilio?.accountSid ?? "new"}
-                    connection={twilio}
-                    onConnected={connected}
-                  />
-                )}
-                <section>
-                  <div className="section-head">
-                    <h2>Your Twilio numbers</h2>
-                    <button
-                      className="ghost"
-                      disabled={!twilio?.configured || loadingNumbers}
-                      onClick={() => void loadNumbers()}
-                    >
-                      {loadingNumbers ? "Loading numbers…" : "Refresh numbers"}
-                    </button>
-                  </div>
-                  <p className="hint">
-                    Assigning an assistant updates the number's Twilio voice
-                    webhook. These numbers can also be used for outbound calls.
-                  </p>
-                  {!numbers.length ? (
-                    <div className="empty">
-                      {loadingNumbers
-                        ? "Loading your Twilio phone numbers…"
-                        : twilio?.configured
-                          ? "No phone numbers found. Add a number in your Twilio Console, then refresh."
-                          : "Connect your Twilio account above to load its phone numbers."}
-                    </div>
-                  ) : (
-                    numbers.map((n) => (
-                      <div className="number-row" key={n.sid}>
-                        <div>
-                          <strong>{n.phoneNumber}</strong>
-                          <small>{n.label}</small>
-                        </div>
-                        <label>
-                          Inbound assistant
-                          <select
-                            value={n.agentId ?? ""}
-                            onChange={(e) => {
-                              if (e.target.value)
-                                void api(`/numbers/${n.sid}/assign`, "POST", {
-                                  agentId: e.target.value,
-                                })
-                                  .then(() => loadNumbers())
-                                  .catch((e) => setError(e.message));
-                            }}
-                          >
-                            <option value="" disabled>
-                              Choose assistant
-                            </option>
-                            {agents.map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        {n.agentId && (
-                          <Button
-                            variant="outline"
-                            disabled={saving}
-                            onClick={() => {
-                              setSaving(true);
-                              setError("");
-                              void api(`/numbers/${n.sid}/assign`, "POST", {
-                                agentId: n.agentId,
-                              })
-                                .then(() =>
-                                  setNotice(
-                                    "Inbound route updated to the current public URL.",
-                                  ),
-                                )
-                                .catch((e) => setError(e.message))
-                                .finally(() => setSaving(false));
-                            }}
-                          >
-                            Refresh inbound route
-                          </Button>
-                        )}
-                        <button
-                          className="ghost"
-                          onClick={() => {
-                            setPreferredFrom(n.phoneNumber);
-                            setSection("Calls");
-                            setError("");
-                            setNotice("");
-                          }}
-                        >
-                          Make a call
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </section>
-              </div>
+            {section === "Phone numbers" && loaded && (
+              <PhoneNumbersPanel
+                key={twilio?.accountSid ?? "new"}
+                connection={twilio}
+                numbers={numbers}
+                agents={agents}
+                loading={loadingNumbers}
+                onConnected={connected}
+                onRefresh={loadNumbers}
+                onNumbers={setNumbers}
+                onCall={(number) => {
+                  setPreferredFrom(number);
+                  setSection("Calls");
+                  setError("");
+                  setNotice("");
+                }}
+              />
             )}
             {section === "Calls" && (
               <CallsPanel

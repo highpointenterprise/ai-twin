@@ -24,7 +24,7 @@ export async function backendFetch(path: string, init: RequestInit = {}): Promis
     ...init,
     cache: "no-store",
     redirect: "manual",
-    signal: AbortSignal.timeout(15_000),
+    signal: init.signal ?? AbortSignal.timeout(15_000),
   });
 }
 

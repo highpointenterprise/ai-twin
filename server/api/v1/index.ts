@@ -30,6 +30,7 @@ export interface ApiV1Dependencies {
   objects: ObjectStore;
   telephony: Telephony;
   twilioSettings: TwilioSettings;
+  phoneNumbers?: import("../../phone-numbers/service").PhoneNumbers;
   registry: CallRegistry;
   traces: TraceStore;
   contexts: ContextStore;
@@ -114,7 +115,7 @@ export const createApiV1 = async (deps: ApiV1Dependencies): Promise<ApiV1> => {
     phoneNumbers: {
       numbers: phoneNumbers,
       accountSid,
-      service: new PhoneNumberService({ numbers: phoneNumbers, assistants, telephony: deps.telephony, accountSid }),
+      service: new PhoneNumberService({ numbers: phoneNumbers, assistants, telephony: deps.telephony, accountSid, management: deps.phoneNumbers }),
     },
   });
   return {

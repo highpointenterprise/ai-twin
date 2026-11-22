@@ -3,6 +3,7 @@ import { backendSessionToken } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 async function proxy(request: Request, { params }: { params: Promise<{ path: string[] }> }): Promise<Response> {
   if (!["GET", "HEAD"].includes(request.method) && !sameOrigin(request)) {
@@ -17,6 +18,7 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
   try {
     const response = await backendFetch(`/api/${path.join("/")}${new URL(request.url).search}`, {
       method: request.method,
+      ...(["numbers", "integrations"].includes(path[0]) ? { signal: AbortSignal.timeout(55_000) } : {}),
       headers: {
         Authorization: `Bearer ${token}`,
         ...(request.headers.has("content-type") ? { "Content-Type": request.headers.get("content-type")! } : {}),
@@ -30,6 +32,8 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
     }
     return new Response(response.body, { status: response.status, headers: outgoing });
   } catch {
+    if (path[0] === "numbers" && path[1] === "purchase")
+      return Response.json({ error: "The purchase outcome is not yet confirmed. Refresh your numbers and check Twilio before buying again." }, { status: 503 });
     return Response.json({ error: "The server is temporarily unavailable. Please try again." }, { status: 503 });
   }
 }
