@@ -59,6 +59,7 @@ export interface HttpDeps {
   costs?: CostTracker;
   finalizeCall?: (sid: string) => Promise<void>;
   retryStorage?: (sid: string) => Promise<void>;
+  serverEvents?: import("../webhooks/outbox").ServerEventOutbox;
   calls?: MongoCallRepository;
   objects?: ObjectStore;
   callState?: RedisCallState;
@@ -593,6 +594,19 @@ export const createAdminApp = (
       return res.json(trace.view());
     }),
   );
+  app.get("/api/calls/:sid/server-events", handle(async (req, res) => {
+    if (!d.calls || !d.serverEvents) throw new HttpError(503, "Server events unavailable.");
+    const call = await d.calls.get(z.string().regex(/^[A-Za-z0-9_-]{1,80}$/).parse(req.params.sid));
+    if (!call) throw new HttpError(404, "Call not found.");
+    return res.json(await d.serverEvents.list(call.sid));
+  }));
+  app.post("/api/calls/:sid/server-events/retry", handle(async (req, res) => {
+    if (!d.calls || !d.serverEvents) throw new HttpError(503, "Server events unavailable.");
+    const call = await d.calls.get(z.string().regex(/^[A-Za-z0-9_-]{1,80}$/).parse(req.params.sid));
+    if (!call) throw new HttpError(404, "Call not found.");
+    await d.serverEvents.retryFailed(call.sid);
+    return res.status(202).json({ accepted: true });
+  }));
   app.post(
     "/api/calls/:sid/storage/retry",
     handle(async (req, res) => {

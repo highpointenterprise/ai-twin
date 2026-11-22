@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assistantServerSchema } from "./assistant-server";
 export const e164 = z
   .string()
   .regex(/^\+[1-9]\d{6,14}$/, "Use an E.164 number, e.g. +14155550123.");
@@ -66,6 +67,7 @@ export const screeningSchema = z
 export const assistantSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
+    server: assistantServerSchema.default({}),
     systemPrompt: z.string().trim().min(1).max(16000),
     firstMessage: z
       .string()

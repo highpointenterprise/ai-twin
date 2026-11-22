@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { AssistantServerEvents } from "./webhooks/service";
 import { errorDetail } from "./observability/diagnostics";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -161,6 +162,9 @@ async function main(): Promise<void> {
     expectedMinutesPerMonth: env.HOSTING_EXPECTED_MINUTES_PER_MONTH,
     egressUsdPerGb: env.HOSTING_EGRESS_USD_PER_GB,
   };
+  const serverEvents = new AssistantServerEvents({ db, userId: env.WORKSPACE_USER_ID, calls, objects, baseUrl: env.PUBLIC_BASE_URL });
+  await serverEvents.initialize();
+  serverEvents.start();
   startupStage = "Redis job queue";
   const artifacts = new ArtifactQueue(
     env.REDIS_URL,
@@ -207,6 +211,7 @@ async function main(): Promise<void> {
           recordingSid,
           Number(metadata.duration),
         );
+        await db.collection("recording_requests").updateOne({ _id: sid as never }, { $set: { state: "completed" } });
         await artifacts.enqueue(sid, `recording-cost-${recordingSid}`, 1000);
         return;
       }
@@ -236,6 +241,7 @@ async function main(): Promise<void> {
       await calls.exportArtifacts(sid, objects);
       if (result.retryReasons.length)
         throw new Error(result.retryReasons.join(" "));
+      await serverEvents.enqueueEndOfCall(sid);
       await calls.markArchived(sid, record.storageRevision ?? 0);
       if (record.parentCallSid)
         await artifacts.enqueue(
@@ -333,6 +339,7 @@ async function main(): Promise<void> {
     objects,
     callState,
     finalizeCall,
+    serverEvents: serverEvents.outbox,
     meetings,
     retryStorage: async (sid) => {
       const call = await calls.get(sid);
@@ -409,11 +416,12 @@ async function main(): Promise<void> {
     }),
   );
   const workspaceBusy = async () => {
-    const [queued, pending] = await Promise.all([
+    const [webhooksPending, queued, pending] = await Promise.all([
+      serverEvents.outbox.pending(),
       db.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } }),
       db.collection("calls").findOne({ $or: [{ storagePending: true }, { status: { $nin: ["completed", "failed"] } }] }),
     ]);
-    return !!queued || !!pending || background.size > 0 || registry.activeCount > 0 || deps.pendingCalls > 0 || pool.size > 0 || meetings.list().some(m => !["ended", "failed", "needs-login"].includes(m.phase));
+    return webhooksPending || !!queued || !!pending || background.size > 0 || registry.activeCount > 0 || deps.pendingCalls > 0 || pool.size > 0 || meetings.list().some(m => !["ended", "failed", "needs-login"].includes(m.phase));
   };
   const activityTimer = setInterval(() => {
     void workspaceBusy().then(busy => process.send?.({ type: "activity", busy })).catch(() => {});
@@ -449,6 +457,7 @@ async function main(): Promise<void> {
       await registry.flush();
       await traces.flush();
       await artifacts.close();
+      await serverEvents.close();
       // Worker completion can race the first drain and emit additional trace data.
       await registry.flush();
       await traces.flush();

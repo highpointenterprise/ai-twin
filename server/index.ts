@@ -20,19 +20,35 @@ async function main() {
   attachWorkspaceMedia(publicServer, pool);
   publicServer.listen(env.PORT);
   const admin = apps.admin.listen(env.ADMIN_PORT, env.ADMIN_HOST);
-  void (async () => {
-    for await (const workspace of db.collection("workspaces").find({})) {
-      const tenant = mongo.db(workspace.database);
-      const queued = await tenant.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } });
-      const pending = await tenant.collection("calls").findOne({ storagePending: true });
-      if (queued || pending) await pool.get(workspace.userId, false);
-    }
-  })().catch(() => console.error("workspace.recovery_failed"));
+  let closing = false, recovering = false;
+  const recover = async () => {
+    if (closing || recovering) return;
+    recovering = true;
+    try {
+      for await (const workspace of db.collection("workspaces").find({})) {
+        if (closing) break;
+        const tenant = mongo.db(workspace.database);
+        const [queued, pending, webhooks] = await Promise.all([
+          tenant.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } }),
+          tenant.collection("calls").findOne({ storagePending: true }),
+          tenant.collection("server_event_deliveries").findOne({ userId: workspace.userId, state: { $in: ["pending", "delivering"] } }),
+        ]);
+        if (!closing && (queued || pending || webhooks)) {
+          try { await pool.get(workspace.userId, false); }
+          catch { console.error("workspace.recovery_deferred"); }
+        }
+      }
+    } finally { recovering = false; }
+  };
+  const recoverSafely = () => { void recover().catch(() => console.error("workspace.recovery_failed")); };
+  recoverSafely();
+  const recoveryTimer = setInterval(recoverSafely, 30_000);
+  recoveryTimer.unref();
   console.log("Workspace gateway listening", { public: env.PORT, admin: env.ADMIN_PORT });
-  let closing = false;
   async function close() {
     if (closing) return;
     closing = true;
+    clearInterval(recoveryTimer);
     publicServer.close();
     admin.close();
     await pool.close();

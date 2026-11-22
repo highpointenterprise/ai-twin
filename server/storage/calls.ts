@@ -151,6 +151,10 @@ export class MongoCallRepository {
     const rows = await this.transcripts.find({ callId: sid }).sort({ at: 1, _id: 1 }).limit(limit).toArray();
     return rows.map(({ at, role, text, latencyMs }) => ({ at, role, text, ...(latencyMs !== undefined ? { latencyMs } : {}) }));
   }
+  async completeTranscript(sid: string): Promise<TranscriptLine[]> {
+    const rows = await this.transcripts.find({ callId: sid }).sort({ at: 1, _id: 1 }).toArray();
+    return rows.map(({ at, role, text }) => ({ at, role, text }));
+  }
   async findByRequestId(requestId: string): Promise<StoredCall | undefined> {
     return (await this.calls.findOne({ requestId }, { projection: { _id: 0 } })) ?? undefined;
   }
@@ -160,6 +164,7 @@ export class MongoCallRepository {
   async purge(sid: string, objects: ObjectStore): Promise<void> {
     await objects.deletePrefix(`calls/${encodeURIComponent(sid)}/`);
     await Promise.all([
+      this.db.collection("server_event_deliveries").deleteMany({ callId: sid }),
       this.events.deleteMany({ callId: sid }),
       this.transcripts.deleteMany({ callId: sid }),
       this.usage.deleteMany({ callId: sid }),

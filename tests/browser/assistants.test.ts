@@ -204,6 +204,10 @@ test(
         await page
           .getByRole("button", { name: "Advanced", exact: true })
           .click();
+        await page
+          .getByLabel("Server URL", { exact: true })
+          .fill("https://receiver.example/call-ended");
+        await page.getByLabel("Webhook timeout (seconds)").fill("15");
         await page.getByLabel("Wait before speaking (seconds)").fill("0.4");
         await page
           .getByLabel("Words to interrupt (0 = voice activity)")
@@ -255,6 +259,10 @@ test(
         assert.equal(saved.voice.model, "eleven_multilingual_v2");
         assert.equal(saved.voice.speed, 1.1);
         assert.deepEqual(saved.toolIds, [tool.id]);
+        assert.deepEqual(saved.server, {
+          url: "https://receiver.example/call-ended",
+          timeoutSeconds: 15,
+        });
         assert.equal(saved.startSpeakingPlan.waitSeconds, 0.4);
         assert.equal(saved.stopSpeakingPlan.numWords, 3);
         assert.deepEqual(saved.stopSpeakingPlan.interruptionPhrases, [
@@ -285,6 +293,17 @@ test(
         await page.reload();
         await page
           .getByRole("button", { name: /Support specialist Flux/ })
+          .click();
+        await page
+          .getByRole("button", { name: "Advanced", exact: true })
+          .click();
+        assert.equal(
+          await page.getByLabel("Server URL", { exact: true }).inputValue(),
+          "https://receiver.example/call-ended",
+        );
+        await page
+          .getByRole("navigation", { name: "Assistant configuration" })
+          .getByRole("button", { name: "Assistant", exact: true })
           .click();
         assert.equal(
           await page.getByLabel("Assistant name", { exact: true }).inputValue(),

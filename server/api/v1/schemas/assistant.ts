@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assistantServerSchema } from "../../../../lib/assistant-server";
 import { listQuerySchema } from "./common";
 
 const message = z
@@ -68,6 +69,7 @@ const voicemailDetectionSchema = z.union([
 export const assistantBodySchema = z
   .object({
     name: z.string().trim().min(1).max(40).optional(),
+    server: assistantServerSchema.optional(),
     model: modelSchema.optional(),
     voice: voiceSchema.optional(),
     transcriber: transcriberSchema.optional(),
