@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./components/assistants/assistants.css";
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
