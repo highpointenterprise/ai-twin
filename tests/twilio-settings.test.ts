@@ -183,7 +183,7 @@ test("bad credentials and malformed input preserve the previous connection and n
   const http = await serve(t, f.d);
   await http.connect(first);
   const response = await http.connect(second);
-  assert.equal(response.status, 401);
+  assert.equal(response.status, 422);
   const body = await response.text();
   assert.ok(!body.includes(second.authToken));
   assert.match(body, /rejected these credentials/);

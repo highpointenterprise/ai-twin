@@ -9,6 +9,7 @@ export interface PhoneNumberServiceDependencies {
   assistants: AssistantApiRepository;
   telephony: Telephony;
   accountSid: () => string | undefined;
+  management?: import("../../../phone-numbers/service").PhoneNumbers;
 }
 
 export class PhoneNumberService {
@@ -29,6 +30,10 @@ export class PhoneNumberService {
     await this.assertAssistant(body.assistantId);
     const owned = (await this.deps.telephony.listNumbers()).find((entry) => entry.phoneNumber === body.number);
     if (!owned) throw badRequest("number: not found in the connected Twilio account");
+    if (this.deps.management) {
+      await this.deps.management.update(owned.sid, { assistantId: body.assistantId ?? null, ...(body.name ? { label: body.name } : {}) });
+      return (await this.deps.numbers.byNumbers([body.number])).get(body.number)!;
+    }
     await this.deps.telephony.routeInbound(
       owned.sid,
       `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`,
@@ -46,6 +51,22 @@ export class PhoneNumberService {
   async update(id: string, body: PhoneNumberUpdate): Promise<PhoneNumberDocument> {
     this.assertAccount(body.twilioAccountSid);
     await this.assertAssistant(body.assistantId);
+    const existing = await this.deps.numbers.get(id);
+    if (!existing) throw notFound("Phone number not found");
+    if (this.deps.management) {
+      const owned = (await this.deps.telephony.listNumbers()).find((entry) => entry.phoneNumber === existing.number);
+      if (!owned) throw notFound("Phone number not found in the connected Twilio account");
+      await this.deps.management.update(owned.sid, {
+        ...(body.assistantId !== undefined ? { assistantId: body.assistantId } : {}),
+        ...(body.name !== undefined ? { label: body.name } : {}),
+      });
+      return (await this.deps.numbers.get(id))!;
+    }
+    if (body.assistantId !== undefined) {
+      const owned = (await this.deps.telephony.listNumbers()).find((entry) => entry.phoneNumber === existing.number);
+      if (!owned) throw notFound("Phone number not found in the connected Twilio account");
+      await this.deps.telephony.routeInbound(owned.sid, `${env.PUBLIC_BASE_URL}/twilio/voice/inbound`, `${env.PUBLIC_BASE_URL}/twilio/status`);
+    }
     const fields = {
       ...(body.name !== undefined ? { name: body.name } : {}),
       ...(body.assistantId !== undefined ? { assistantId: body.assistantId } : {}),

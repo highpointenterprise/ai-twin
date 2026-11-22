@@ -25,7 +25,7 @@ export function twilioConnectionError(error: unknown): HttpError {
   const e = error as { status?: number; code?: number | string } | undefined;
   if (e?.status === 401 || e?.code === 20003)
     return new HttpError(
-      401,
+      422,
       "Twilio rejected these credentials. Check the Account SID and Auth Token for the same account.",
     );
   if (e?.status === 403)

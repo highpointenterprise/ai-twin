@@ -9,7 +9,7 @@ import { validatedTool, type ToolRepository } from "../tools/registry";
 type Metadata = { _id: string; orgId: string; createdAt: string; updatedAt: string };
 type AssistantDocument = AgentConfig & Metadata;
 type ToolDocument = ToolConfig & Metadata;
-type PhoneDocument = Metadata & { id: string; number: string; assistantId: string };
+type PhoneDocument = Metadata & { id: string; number: string; assistantId: string | null; available?: boolean };
 const DEFAULT_ASSISTANT_ID = "00000000-0000-4000-8000-000000000001";
 
 export function configPageLimit(page: ConfigPage = {}): number {
@@ -101,12 +101,12 @@ export class MongoAgentStore implements AgentRepository {
   }
 
   async agentForNumber(phoneNumber: string): Promise<AgentConfig | undefined> {
-    const number = await this.numbers.findOne({ orgId: this.orgId, number: phoneNumber });
-    return number ? this.find(number.assistantId) : undefined;
+    const number = await this.numbers.findOne({ orgId: this.orgId, number: phoneNumber, available: { $ne: false } });
+    return number?.assistantId ? this.find(number.assistantId) : undefined;
   }
 
   async numberForAgent(agentId: string): Promise<string | undefined> {
-    const number = await this.numbers.findOne({ orgId: this.orgId, assistantId: agentId }, { sort: { number: 1 } });
+    const number = await this.numbers.findOne({ orgId: this.orgId, assistantId: agentId, available: { $ne: false } }, { sort: { number: 1 } });
     return number?.number;
   }
 }

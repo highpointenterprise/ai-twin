@@ -1,11 +1,11 @@
 import twilio from "twilio";
 import type { TwilioCredentials } from "../../lib/twilio";
-import type { Telephony } from "../core/ports";
+import type { Telephony, TelephonyNumber } from "../core/ports";
 import {
   environmentTwilioCredentials,
   twilioConnectionError,
 } from "./twilio-settings";
-import { errorDetail, writeDiagnostic } from "../observability/diagnostics";
+import { writeDiagnostic } from "../observability/diagnostics";
 async function operation<T>(
   name: string,
   sid: string,
@@ -21,7 +21,10 @@ async function operation<T>(
     return result;
   } catch (error) {
     writeDiagnostic(sid || "system", `twilio.${name}.failed`, {
-      ...errorDetail(error),
+      code:
+        typeof (error as { code?: unknown })?.code === "number"
+          ? (error as { code: number }).code
+          : "unknown",
       ms: Date.now() - began,
     });
     throw error;
@@ -40,6 +43,39 @@ export const escapeXml = (v: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+export const numberView = (n: {
+  sid: string;
+  phoneNumber: string;
+  friendlyName: string;
+  capabilities?: { voice?: boolean; sms?: boolean; mms?: boolean };
+  voiceUrl?: string;
+  voiceMethod?: string;
+  voiceApplicationSid?: string;
+  trunkSid?: string;
+  statusCallback?: string;
+  statusCallbackMethod?: string;
+  isoCountry?: string;
+  addressSid?: string;
+  bundleSid?: string;
+}): TelephonyNumber => ({
+  sid: n.sid,
+  phoneNumber: n.phoneNumber,
+  label: n.friendlyName,
+  capabilities: {
+    voice: !!n.capabilities?.voice,
+    sms: !!n.capabilities?.sms,
+    mms: !!n.capabilities?.mms,
+  },
+  voiceUrl: n.voiceUrl ?? "",
+  voiceMethod: n.voiceMethod ?? "",
+  voiceApplicationSid: n.voiceApplicationSid ?? "",
+  trunkSid: n.trunkSid ?? "",
+  statusCallback: n.statusCallback ?? "",
+  statusCallbackMethod: n.statusCallbackMethod ?? "",
+  country: n.isoCountry ?? "",
+  addressSid: n.addressSid ?? "",
+  bundleSid: n.bundleSid ?? "",
+});
 export const createTwilioTelephony = (
   credentials = environmentTwilioCredentials,
   makeClient = twilioClient,
@@ -52,24 +88,28 @@ export const createTwilioTelephony = (
           await operation("numbers", "", () =>
             client().incomingPhoneNumbers.list({ pageSize: 1000 }),
           )
-        ).map((n) => ({
-          sid: n.sid,
-          phoneNumber: n.phoneNumber,
-          label: n.friendlyName,
-        }));
+        ).map(numberView);
       } catch (error) {
         throw twilioConnectionError(error);
       }
     },
     routeInbound: async (sid, url, statusUrl) => {
-      await operation("route_inbound", sid, () =>
-        client().incomingPhoneNumbers(sid).update({
-          voiceUrl: url,
-          voiceMethod: "POST",
-          statusCallback: statusUrl,
-          statusCallbackMethod: "POST",
-        }),
-      );
+      try {
+        await operation("route_inbound", sid, () =>
+          client().incomingPhoneNumbers(sid).update({
+            voiceApplicationSid: "",
+            trunkSid: "",
+            voiceFallbackUrl: "",
+            voiceReceiveMode: "voice",
+            voiceUrl: url,
+            voiceMethod: "POST",
+            statusCallback: statusUrl,
+            statusCallbackMethod: "POST",
+          }),
+        );
+      } catch (error) {
+        throw twilioConnectionError(error);
+      }
     },
     placeCall: async ({ to, from, url, statusUrl, voicemail }) => {
       const c = await operation("dial", "", () =>

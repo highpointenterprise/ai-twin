@@ -104,6 +104,9 @@ export interface PhoneNumberView {
   phoneNumber: string;
   label: string;
   agentId: string | null;
+  capabilities?: { voice: boolean; sms: boolean; mms: boolean };
+  voiceUrl?: string;
+  routingStatus?: "ready" | "needs-update" | "unassigned";
 }
 
 export interface VoiceOption {

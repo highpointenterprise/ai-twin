@@ -112,6 +112,8 @@ export interface PhoneNumberDocument {
   provider?: "twilio";
   twilioNumberSid?: string;
   twilioAccountSid?: string;
+  available?: boolean;
+  configuration?: import("../../../core/ports").TelephonyNumber;
   createdAt: string;
   updatedAt: string;
 }
@@ -150,7 +152,7 @@ export class PhoneNumberApiRepository {
 
   async list(range: TimeRange, limit: number): Promise<PhoneNumberDocument[]> {
     const documents = await this.numbers
-      .find({ orgId: this.orgId, ...timeFilters(range) })
+      .find({ orgId: this.orgId, available: { $ne: false }, ...timeFilters(range) })
       .sort({ createdAt: -1, id: -1 })
       .limit(limit)
       .toArray();
@@ -159,7 +161,7 @@ export class PhoneNumberApiRepository {
 
   async page(query: PhoneNumberPageQuery): Promise<PhoneNumberPage> {
     const direction = query.sortOrder === "ASC" ? 1 : -1;
-    const clauses: Filter<Stored<PhoneNumberDocument>>[] = [{ orgId: this.orgId }, timeFilters(query)];
+    const clauses: Filter<Stored<PhoneNumberDocument>>[] = [{ orgId: this.orgId, available: { $ne: false } }, timeFilters(query)];
     if (query.search) {
       const pattern = new RegExp(escapeRegex(query.search), "i");
       clauses.push({ $or: [{ name: pattern }, { number: pattern }] });
@@ -191,12 +193,12 @@ export class PhoneNumberApiRepository {
   }
 
   async get(id: string): Promise<PhoneNumberDocument | undefined> {
-    const document = await this.numbers.findOne({ orgId: this.orgId, id });
+    const document = await this.numbers.findOne({ orgId: this.orgId, id, available: { $ne: false } });
     return document ? (strip(document) as PhoneNumberDocument) : undefined;
   }
 
   async byAssistant(assistantId: string): Promise<PhoneNumberDocument | undefined> {
-    const document = await this.numbers.findOne({ orgId: this.orgId, assistantId }, { sort: { createdAt: 1 } });
+    const document = await this.numbers.findOne({ orgId: this.orgId, assistantId, available: { $ne: false } }, { sort: { createdAt: 1 } });
     return document ? (strip(document) as PhoneNumberDocument) : undefined;
   }
 
@@ -228,7 +230,7 @@ export class PhoneNumberApiRepository {
 
   async update(id: string, fields: Partial<Pick<PhoneNumberDocument, "name" | "assistantId">>): Promise<PhoneNumberDocument | undefined> {
     const updated = await this.numbers.findOneAndUpdate(
-      { orgId: this.orgId, id },
+      { orgId: this.orgId, id, available: { $ne: false } },
       { $set: { ...fields, updatedAt: new Date().toISOString() } },
       { returnDocument: "after" },
     );
@@ -236,7 +238,7 @@ export class PhoneNumberApiRepository {
   }
 
   async delete(id: string): Promise<PhoneNumberDocument | undefined> {
-    const removed = await this.numbers.findOneAndDelete({ orgId: this.orgId, id });
+    const removed = await this.numbers.findOneAndDelete({ orgId: this.orgId, id, available: { $ne: false } });
     return removed ? (strip(removed) as PhoneNumberDocument) : undefined;
   }
 }

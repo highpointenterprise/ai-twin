@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { PhoneNumbers } from "./phone-numbers/service";
+import { NumberRepository } from "./phone-numbers/repository";
+import { createTwilioNumberProvider } from "./providers/twilio-numbers";
 import { AssistantServerEvents } from "./webhooks/service";
 import { errorDetail } from "./observability/diagnostics";
 import { createServer } from "node:http";
@@ -119,6 +122,14 @@ async function main(): Promise<void> {
     createTwilioTelephony(() => credentials).listNumbers(),
   );
   const telephony = createTwilioTelephony(twilioSettings.current);
+  const phoneNumbers = new PhoneNumbers({
+    repository: new NumberRepository(db, env.WORKSPACE_USER_ID),
+    settings: twilioSettings,
+    telephony,
+    provider: createTwilioNumberProvider(twilioSettings.current),
+    assistants: store,
+    publicBaseUrl: env.PUBLIC_BASE_URL,
+  });
   const transferStore = new MongoTransferStore(db);
   await transferStore.initialize();
   const transferRecords = await transferStore.loadActive();
@@ -335,6 +346,7 @@ async function main(): Promise<void> {
     pendingCalls: 0,
     warmTransfers,
     twilioSettings,
+    phoneNumbers,
     calls,
     objects,
     callState,
@@ -365,6 +377,7 @@ async function main(): Promise<void> {
     objects,
     telephony,
     twilioSettings,
+    phoneNumbers,
     registry,
     traces,
     contexts,

@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { MongoClient } from "mongodb";
 import { AuthStore } from "../server/auth/store";
 import { createAuthRouter, requireUser } from "../server/auth/routes";
-import { createAdminApp } from "../server/http/routes";
+import { createAdminApp, type HttpDeps } from "../server/http/routes";
 import { AgentStore } from "../server/store/agents";
 import { ToolRegistry } from "../server/tools/registry";
 import { CallRegistry } from "../server/store/calls";
@@ -11,7 +11,7 @@ import { TraceStore } from "../server/observability/trace";
 import { SessionPool } from "../server/engine/pool";
 import { agent, telephony } from "./helpers";
 
-export async function authFixture() {
+export async function authFixture(overrides?: (db: import("mongodb").Db) => Promise<Partial<HttpDeps>>) {
   const client = await new MongoClient(process.env.TEST_MONGODB_URI!, { serverSelectionTimeoutMS: 5000 }).connect();
   const db = client.db(`auth_test_${randomUUID().replaceAll("-", "")}`);
   const store = new AuthStore(db);
@@ -27,6 +27,7 @@ export async function authFixture() {
     telephony: telephony(),
     listVoices: async () => [],
     pendingCalls: 0,
+    ...(overrides ? await overrides(db) : {}),
   }, { router: createAuthRouter(store, clientSecret), requireUser: requireUser(store) });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));

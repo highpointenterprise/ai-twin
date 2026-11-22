@@ -1,3 +1,9 @@
+import {
+  numberSearchSchema,
+  numberPurchaseSchema,
+  numberAssignmentSchema,
+  numberRenameSchema,
+} from "../../lib/phone-numbers";
 import type { MongoCallRepository } from "../storage/calls";
 import type { ObjectStore } from "../storage/objects";
 import type { RedisCallState } from "../storage/redis";
@@ -55,6 +61,7 @@ export interface HttpDeps {
   pendingCalls: number;
   warmTransfers?: WarmTransferCoordinator;
   twilioSettings?: TwilioSettings;
+  phoneNumbers?: import("../phone-numbers/service").PhoneNumbers;
   meetings?: MeetingService;
   costs?: CostTracker;
   finalizeCall?: (sid: string) => Promise<void>;
@@ -257,22 +264,31 @@ export const createAdminApp = (
           409,
           "Finish active calls before changing credentials.",
         );
-      const numbers = await d.twilioSettings.connect(
-        req.body,
-        () =>
-          registry.activeCount > 0 ||
-          d.pendingCalls > 0 ||
-          d.pool.size > 0 ||
-          !!d.warmTransfers?.hasActiveTransfers,
-      );
+      const connect = async () => {
+        const numbers = await d.twilioSettings!.connect(
+          req.body,
+          () =>
+            registry.activeCount > 0 ||
+            d.pendingCalls > 0 ||
+            d.pool.size > 0 ||
+            !!d.warmTransfers?.hasActiveTransfers,
+        );
+        return d.phoneNumbers
+          ? d.phoneNumbers.sync(numbers)
+          : Promise.all(
+              numbers.map(async (n) => ({
+                ...n,
+                agentId:
+                  (await store.agentForNumber(n.phoneNumber))?.id ?? null,
+              })),
+            );
+      };
+      const numbers = await (d.phoneNumbers
+        ? d.phoneNumbers.exclusive(connect)
+        : connect());
       return res.json({
         connection: d.twilioSettings.status(),
-        numbers: await Promise.all(
-          numbers.map(async (n) => ({
-            ...n,
-            agentId: (await store.agentForNumber(n.phoneNumber))?.id ?? null,
-          })),
-        ),
+        numbers,
         missing: missingConfiguration(d),
       });
     }),
@@ -352,6 +368,43 @@ export const createAdminApp = (
     }),
   );
   app.get(
+    "/api/numbers/available",
+    handle(async (req, res) => {
+      if (!d.phoneNumbers)
+        throw new HttpError(503, "Phone number management is unavailable.");
+      res.set("Cache-Control", "no-store");
+      res.json(
+        await d.phoneNumbers.search(numberSearchSchema.parse(req.query)),
+      );
+    }),
+  );
+  app.post(
+    "/api/numbers/purchase",
+    handle(async (req, res) => {
+      if (!d.phoneNumbers)
+        throw new HttpError(503, "Phone number management is unavailable.");
+      res
+        .status(201)
+        .json(
+          await d.phoneNumbers.purchase(numberPurchaseSchema.parse(req.body)),
+        );
+    }),
+  );
+  app.patch(
+    "/api/numbers/:sid",
+    handle(async (req, res) => {
+      if (!d.phoneNumbers)
+        throw new HttpError(503, "Phone number management is unavailable.");
+      const sid = z
+        .string()
+        .regex(/^PN[a-f0-9]{32}$/i)
+        .parse(req.params.sid);
+      res.json(
+        await d.phoneNumbers.update(sid, numberRenameSchema.parse(req.body)),
+      );
+    }),
+  );
+  app.get(
     "/api/numbers",
     handle(async (_req, res) => {
       requireTwilioStable(d);
@@ -362,6 +415,8 @@ export const createAdminApp = (
           503,
           "Connect your Twilio account to load phone numbers.",
         );
+      res.set("Cache-Control", "no-store");
+      if (d.phoneNumbers) return res.json(await d.phoneNumbers.list());
       const list: PhoneNumberView[] = await Promise.all(
         (await telephony.listNumbers()).map(async (n) => ({
           ...n,
@@ -374,6 +429,16 @@ export const createAdminApp = (
   app.post(
     "/api/numbers/:sid/assign",
     handle(async (req, res) => {
+      if (d.phoneNumbers) {
+        const sid = z
+          .string()
+          .regex(/^PN[a-f0-9]{32}$/i)
+          .parse(req.params.sid);
+        const { agentId } = numberAssignmentSchema.parse(req.body);
+        return res.json(
+          await d.phoneNumbers.update(sid, { assistantId: agentId }),
+        );
+      }
       const agent = effectiveAssistant(
         await store.get(assignRequestSchema.parse(req.body).agentId),
       );
@@ -670,6 +735,15 @@ export const createPublicApp = (d: HttpDeps): Express => {
     );
   };
   const verifyRequest: RequestHandler = (req, res, next) => {
+    const accountSid = d.twilioSettings?.current().accountSid;
+    if (
+      accountSid &&
+      req.body?.AccountSid &&
+      req.body.AccountSid !== accountSid
+    ) {
+      res.status(403).end();
+      return;
+    }
     if (
       !telephony.validateWebhook(
         `${env.PUBLIC_BASE_URL}${req.originalUrl}`,
@@ -742,7 +816,9 @@ export const createPublicApp = (d: HttpDeps): Express => {
     verified,
     handle(async (req, res) => {
       const b = bodySchema.parse(req.body),
-        assigned = await store.agentForNumber(b.To),
+        assigned = d.phoneNumbers
+          ? await d.phoneNumbers.inboundAssistant(b.To)
+          : await store.agentForNumber(b.To),
         agent = assigned ? effectiveAssistant(assigned) : undefined;
       res.type("text/xml");
       const existingId = await contexts.idForSidAsync(b.CallSid);
