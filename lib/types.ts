@@ -124,6 +124,7 @@ export interface CallRecord {
 }
 
 export interface PhoneNumberView {
+  id?: string;
   sid: string;
   phoneNumber: string;
   label: string;

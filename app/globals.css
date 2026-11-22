@@ -348,3 +348,9 @@ pre {
 .phone-search-results { list-style: none; padding: 0; max-height: 24rem; overflow-y: auto; }
 .phone-search-results li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; padding: .75rem 0; border-bottom: 1px solid var(--color-input); }
 .phone-search-results small { display: block; }
+
+.copy-value { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; min-width: 0; }
+.copy-value > span { font-size: .75rem; color: #a1a1aa; }
+.copy-value code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; user-select: all; min-width: 0; }
+.copy-value button { flex-shrink: 0; }
+.copy-value small { color: #a1a1aa; }

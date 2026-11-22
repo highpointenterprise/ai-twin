@@ -15,7 +15,7 @@ export async function api<T>(
   if (response.status === 204) return undefined as T;
   const body = await response.json().catch(() => ({}));
   if (!response.ok)
-    throw new Error(body.error || `Request failed (${response.status}).`);
+    throw new Error((Array.isArray(body.message) ? body.message.join("; ") : body.message) || body.error || `Request failed (${response.status}).`);
   return body as T;
 }
 

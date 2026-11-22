@@ -46,6 +46,7 @@ import { ContextStore } from "./store/contexts";
 import { ToolExecutor } from "./tools/executor";
 import { TwilioSettings } from "./providers/twilio-settings";
 import { MongoTransferStore } from "./storage/transfers";
+import { keyManagementRoutes } from "./api/v1/routes/key-management";
 import { createApiV1, createRootApp } from "./api/v1";
 import { deriveRecordings } from "./storage/recording-derivatives";
 import { metrics } from "./observability/metrics";
@@ -350,6 +351,7 @@ async function main(): Promise<void> {
   startupStage = "HTTP listeners";
   const api = await createApiV1({
     orgId: env.WORKSPACE_USER_ID,
+    authDb: mongo.db(env.AUTH_DATABASE || env.MONGODB_DATABASE),
     db,
     redis,
     callState,
@@ -382,6 +384,7 @@ async function main(): Promise<void> {
     logEvent("server.public_listening", { port: env.PORT }),
   );
   void api.dispatcher.start().catch((error) => logEvent("callqueue.start_failed", errorDetail(error)));
+  deps.apiKeysRouter = keyManagementRoutes(api.keys, env.WORKSPACE_USER_ID, env.PUBLIC_BASE_URL.replace(/\/workspaces\/[^/]+\/?$/, ""));
   const adminApp = createAdminApp(deps, {
     router: createAuthRouter(authStore, env.AUTH_API_SECRET),
     requireUser: requireUser(authStore, env.WORKSPACE_USER_ID),

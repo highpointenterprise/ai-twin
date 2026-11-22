@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createServer } from "node:http";
 import { MongoClient } from "mongodb";
 import { env } from "../lib/env";
+import { ApiKeyDirectory } from "./api/v1/auth/key-directory";
 import { AuthStore } from "./auth/store";
 import { credentialKey } from "./storage/credentials";
 import { WorkspacePool } from "./workspaces/pool";
@@ -15,7 +16,7 @@ async function main() {
   const auth = new AuthStore(db);
   await auth.initialize();
   const pool = new WorkspacePool(db, { ...process.env, MONGODB_DATABASE: env.MONGODB_DATABASE }, env.MAX_WORKSPACE_WORKERS);
-  const apps = createWorkspaceGateway(auth, env.AUTH_API_SECRET, pool);
+  const apps = createWorkspaceGateway(auth, env.AUTH_API_SECRET, pool, new ApiKeyDirectory(db));
   const publicServer = createServer(apps.publicApp);
   attachWorkspaceMedia(publicServer, pool);
   publicServer.listen(env.PORT);

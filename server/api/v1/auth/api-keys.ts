@@ -1,14 +1,16 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Collection, Db } from "mongodb";
 import type { RequestHandler } from "express";
 import { env } from "../../../../lib/env";
 import type { RedisCallState } from "../../../storage/redis";
 import { ApiError } from "../http/errors";
+import {
+  apiKeyDigest as digest,
+  validApiKey,
+  type ApiKeyDirectory,
+} from "./key-directory";
 
 const KEY_PREFIX = "twk_";
-const MAX_TOKEN_LENGTH = 128;
-const POSITIVE_CACHE_MS = 30_000;
-const CACHE_LIMIT = 10_000;
 
 export interface Principal {
   keyId: string;
@@ -27,13 +29,14 @@ interface ApiKeyDocument {
   lastUsedAt?: string;
 }
 
-const digest = (token: string): string => createHash("sha256").update(token).digest("hex");
-
 export class ApiKeyStore {
   private readonly keys: Collection<ApiKeyDocument>;
-  private readonly cache = new Map<string, { principal: Principal; expires: number }>();
 
-  constructor(db: Db, private readonly orgId = "default") {
+  constructor(
+    db: Db,
+    private readonly orgId = "default",
+    private readonly directory?: ApiKeyDirectory,
+  ) {
     this.keys = db.collection<ApiKeyDocument>("api_keys");
   }
 
@@ -41,7 +44,14 @@ export class ApiKeyStore {
     await Promise.all([
       this.keys.createIndex({ hash: 1 }, { unique: true }),
       this.keys.createIndex({ orgId: 1, createdAt: -1 }),
+      this.keys.createIndex({ orgId: 1, _id: 1 }),
     ]);
+    if (this.directory)
+      for await (const key of this.keys.find({
+        orgId: this.orgId,
+        revokedAt: { $exists: false },
+      }))
+        await this.directory.register(key.hash, this.orgId, key._id);
   }
 
   async issue(name: string): Promise<{ id: string; key: string }> {
@@ -55,42 +65,81 @@ export class ApiKeyStore {
       hint: key.slice(-4),
       createdAt: new Date().toISOString(),
     });
+    try {
+      await this.directory?.register(digest(key), this.orgId, id);
+    } catch (error) {
+      await this.keys.deleteOne({ _id: id, orgId: this.orgId });
+      throw error;
+    }
     return { id, key };
   }
 
-  async revoke(id: string): Promise<boolean> {
-    const result = await this.keys.updateOne(
-      { _id: id, revokedAt: { $exists: false } },
-      { $set: { revokedAt: new Date().toISOString() } },
-    );
-    this.cache.clear();
-    return result.modifiedCount === 1;
+  async list(after?: string) {
+    const rows = await this.keys
+      .find(
+        { orgId: this.orgId, ...(after ? { _id: { $gt: after } } : {}) },
+        { projection: { hash: 0 } },
+      )
+      .sort({ _id: 1 })
+      .limit(101)
+      .toArray();
+    return {
+      keys: rows
+        .slice(0, 100)
+        .map(({ _id, orgId: _orgId, hash: _hash, ...key }) => ({
+          id: _id,
+          ...key,
+        })),
+      nextCursor: rows.length > 100 ? rows[99]._id : null,
+    };
   }
-
+  async rename(id: string, name: string): Promise<boolean> {
+    return !!(
+      await this.keys.updateOne(
+        { _id: id, orgId: this.orgId, revokedAt: { $exists: false } },
+        { $set: { name } },
+      )
+    ).matchedCount;
+  }
+  async revoke(id: string): Promise<boolean> {
+    const key = await this.keys.findOneAndUpdate(
+      { _id: id, orgId: this.orgId },
+      { $set: { revokedAt: new Date().toISOString() } },
+      { returnDocument: "before" },
+    );
+    if (!key) return false;
+    await this.directory?.remove(key.hash, this.orgId);
+    return true;
+  }
   async verify(token: string): Promise<Principal | undefined> {
-    if (!token.startsWith(KEY_PREFIX) || token.length > MAX_TOKEN_LENGTH) return undefined;
-    const hash = digest(token);
-    const cached = this.cache.get(hash);
-    if (cached && cached.expires > Date.now()) return cached.principal;
-    const document = await this.keys.findOne({ hash, revokedAt: { $exists: false } });
-    if (!document) {
-      this.cache.delete(hash);
-      return undefined;
-    }
-    const principal: Principal = { keyId: document._id, orgId: document.orgId, name: document.name };
-    if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
-    this.cache.set(hash, { principal, expires: Date.now() + POSITIVE_CACHE_MS });
+    if (!validApiKey(token)) return undefined;
+    const document = await this.keys.findOne({
+      hash: digest(token),
+      orgId: this.orgId,
+      revokedAt: { $exists: false },
+    });
+    if (!document) return undefined;
+    const principal: Principal = {
+      keyId: document._id,
+      orgId: document.orgId,
+      name: document.name,
+    };
     void this.keys
-      .updateOne({ _id: document._id }, { $set: { lastUsedAt: new Date().toISOString() } })
+      .updateOne(
+        { _id: document._id },
+        { $set: { lastUsedAt: new Date().toISOString() } },
+      )
       .catch(() => undefined);
     return principal;
   }
 }
 
-const bearerToken = (header: string | undefined): string | undefined => {
+export const bearerToken = (header: string | undefined): string | undefined => {
   if (!header) return undefined;
   const [scheme, token, ...rest] = header.split(" ");
-  return scheme?.toLowerCase() === "bearer" && token && !rest.length ? token : undefined;
+  return scheme?.toLowerCase() === "bearer" && token && !rest.length
+    ? token
+    : undefined;
 };
 
 const WINDOW_MS = 60_000;
@@ -103,14 +152,24 @@ export const authenticate =
       const address = req.ip ?? "unknown";
       const principal = token ? await store.verify(token) : undefined;
       if (!principal) {
-        const limit = await state.rateLimit(`auth-denied:${address}`, 30, WINDOW_MS);
+        const limit = await state.rateLimit(
+          `auth-denied:${address}`,
+          30,
+          WINDOW_MS,
+        );
         if (!limit.allowed)
           throw new ApiError(429, "Too many failed authentication attempts.", {
             "retry-after": String(Math.ceil(limit.retryAfterMs / 1000)),
           });
-        throw new ApiError(401, "Invalid or missing API key.", { "www-authenticate": "Bearer" });
+        throw new ApiError(401, "Invalid or missing API key.", {
+          "www-authenticate": "Bearer",
+        });
       }
-      const budget = await state.rateLimit(`api:${principal.keyId}`, env.API_RATE_LIMIT_PER_MINUTE, WINDOW_MS);
+      const budget = await state.rateLimit(
+        `api:${principal.keyId}`,
+        env.API_RATE_LIMIT_PER_MINUTE,
+        WINDOW_MS,
+      );
       res.setHeader("ratelimit-limit", String(env.API_RATE_LIMIT_PER_MINUTE));
       res.setHeader("ratelimit-remaining", String(budget.remaining));
       if (!budget.allowed)

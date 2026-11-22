@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Document, Filter } from "mongodb";
 import { env } from "../../../../lib/env";
 import type { ToolConfig } from "../../../../lib/config";
@@ -33,6 +33,7 @@ export interface CallServiceDependencies {
   dispatcher: () => CallDispatcher;
   readiness: () => Readiness;
   defaultFrom?: string;
+  accountSid?: () => string | undefined;
 }
 
 export const ARTIFACT_ROUTES = {
@@ -77,14 +78,15 @@ const builtinVariables = (customer: CustomerBody): Record<string, unknown> => {
     date: now.toISOString().slice(0, 10),
     time: now.toISOString().slice(11, 16),
     "customer.number": customer.number,
+    ...(customer.email ? { "customer.email": customer.email } : {}),
+    ...(customer.externalId ? { "customer.externalId": customer.externalId } : {}),
     ...(customer.name ? { "customer.name": customer.name } : {}),
   };
 };
 
 export interface BatchFailure {
   customer: CustomerBody;
-  status: number;
-  message: string | string[];
+  error: string;
 }
 
 export class CallService {
@@ -130,11 +132,10 @@ export class CallService {
         if (outcome.status === "fulfilled") results.push(outcome.value);
         else {
           const error = outcome.reason instanceof ApiError ? outcome.reason : new ApiError(500, "Internal server error");
-          errors.push({ customer: chunk[index], status: error.statusCode, message: error.detail });
+          errors.push({ customer: chunk[index], error: Array.isArray(error.detail) ? error.detail.join("; ") : error.detail });
         }
       });
     }
-    const depth = await this.deps.queue.depth();
     return {
       results,
       errors,
@@ -142,7 +143,6 @@ export class CallService {
         concurrencyBlocked: false,
         concurrencyLimit: env.MAX_CONCURRENT_CALLS,
         remainingConcurrentCalls: Math.max(0, env.MAX_CONCURRENT_CALLS - (await this.deps.queue.activeLeases())),
-        queuedCalls: depth,
       },
     };
   }
@@ -161,7 +161,10 @@ export class CallService {
     idempotencyKey?: string,
   ): Promise<Record<string, unknown>> {
     const id = randomUUID();
-    const { variableValues, ...overrides } = body.assistantOverrides ?? {};
+    const { variableValues: _bodyVariables, ...callOverrides } = body.assistantOverrides ?? {};
+    const { variableValues: _customerVariables, ...customerOverrides } = customer.assistantOverrides ?? {};
+    const overrides = mergeAssistant(callOverrides, customerOverrides);
+    const variableValues = { ...(body.assistantOverrides?.variableValues ?? {}), ...(customer.assistantOverrides?.variableValues ?? {}) };
     const merged = Object.keys(overrides).length ? mergeAssistant(base.body, overrides) : base.body;
     const rendered = withVariables(merged, { ...builtinVariables(customer), ...(variableValues ?? {}) });
     const agent: AgentConfig = effectiveAssistant({ ...toAgentInput(rendered), id: base.assistantId ?? id });
@@ -179,7 +182,8 @@ export class CallService {
       ...(base.assistantId ? { assistantId: base.assistantId } : { transientAssistant: base.body }),
       ...(body.assistantOverrides ? { assistantOverrides: body.assistantOverrides } : {}),
       phoneNumberId: origin.id,
-      customer: { number: customer.number, ...(customer.name ? { name: customer.name } : {}) },
+      customer,
+      ...(body.transport ? { transport: body.transport } : {}),
       from: origin.number,
       agent,
       tools,
@@ -187,7 +191,7 @@ export class CallService {
       ...(body.schedulePlan ? { schedulePlan: body.schedulePlan } : {}),
       attempts: 0,
       runAt: Math.max(now, earliest),
-      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(idempotencyKey ? { idempotencyKey, requestHash: createHash("sha256").update(JSON.stringify({ ...body, customers: undefined, customer })).digest("hex") } : {}),
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -218,12 +222,18 @@ export class CallService {
     if (phoneNumberId) {
       const record = await this.deps.phoneNumbers.get(phoneNumberId);
       if (!record) throw badRequest("phoneNumberId: phone number not found");
+      this.validateOrigin(record);
       return { id: record.id, number: record.number };
     }
     const assigned = assistantId ? await this.deps.phoneNumbers.byAssistant(assistantId) : undefined;
-    if (assigned) return { id: assigned.id, number: assigned.number };
+    if (assigned) { this.validateOrigin(assigned); return { id: assigned.id, number: assigned.number }; }
     if (this.deps.defaultFrom) return { number: this.deps.defaultFrom };
     throw badRequest("phoneNumberId: provide a phone number or assign one to the assistant");
+  }
+
+  private validateOrigin(record: PhoneNumberDocument) {
+    if (record.configuration?.capabilities?.voice === false) throw badRequest("phoneNumberId: this number does not support voice calls");
+    if (this.deps.accountSid && record.twilioAccountSid && record.twilioAccountSid !== this.deps.accountSid()) throw badRequest("phoneNumberId: phone number is not connected to your current Twilio account");
   }
 
   private async load(id: string): Promise<{ request?: CallRequestDocument; call?: StoredCall } | undefined> {

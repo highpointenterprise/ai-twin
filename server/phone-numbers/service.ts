@@ -72,8 +72,10 @@ export class PhoneNumbers {
   private view(
     n: TelephonyNumber,
     assistantId: string | null,
+    id?: string,
   ): PhoneNumberView {
     return {
+      id,
       sid: n.sid,
       phoneNumber: n.phoneNumber,
       label: n.label,
@@ -91,13 +93,10 @@ export class PhoneNumbers {
     const account = this.account();
     await this.deps.repository.sync(account, numbers);
     return Promise.all(
-      numbers.map(async (n) =>
-        this.view(
-          n,
-          (await this.deps.repository.find(account, n.phoneNumber))
-            ?.assistantId ?? null,
-        ),
-      ),
+      numbers.map(async (n) => {
+        const saved = await this.deps.repository.find(account, n.phoneNumber);
+        return this.view(n, saved?.assistantId ?? null, saved?.id);
+      }),
     );
   }
   list() {
@@ -122,7 +121,7 @@ export class PhoneNumbers {
       if (owned) {
         const saved = await this.deps.repository.save(account, owned);
         await this.deps.repository.completePurchase(account, owned);
-        return this.view(owned, saved.assistantId);
+        return this.view(owned, saved.assistantId, saved.id);
       }
       const quote = await this.deps.provider.search({
         country: input.country,
@@ -165,7 +164,7 @@ export class PhoneNumbers {
       }
       const saved = await this.deps.repository.save(account, number);
       await this.deps.repository.completePurchase(account, number);
-      return this.view(number, saved.assistantId);
+      return this.view(number, saved.assistantId, saved.id);
     });
   }
   async update(
@@ -205,7 +204,7 @@ export class PhoneNumbers {
           sid,
           fields.assistantId,
         );
-      return this.view(number, saved.assistantId);
+      return this.view(number, saved.assistantId, saved.id);
     });
   }
   async inboundAssistant(number: string) {

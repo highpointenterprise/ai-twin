@@ -1,4 +1,8 @@
 import express from "express";
+import type { ApiKeyDirectory } from "../api/v1/auth/key-directory";
+import { bearerToken } from "../api/v1/auth/api-keys";
+import { ApiError, apiErrorHandler, asyncRoute } from "../api/v1/http/errors";
+import { requestContext } from "../api/v1/http/middleware";
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import { connect } from "node:net";
@@ -8,20 +12,20 @@ import type { WorkspacePorts } from "./pool";
 
 export interface WorkspaceResolver { get(userId: string, create: boolean): Promise<WorkspacePorts> }
 
-function proxy(req: IncomingMessage, res: ServerResponse, port: number, path: string) {
+function proxy(req: IncomingMessage, res: ServerResponse, port: number, path: string, api = false) {
   const upstream = httpRequest({ hostname: "127.0.0.1", port, path, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${port}` } }, (response) => {
     res.writeHead(response.statusCode || 502, { ...response.headers, "cache-control": "no-store" });
     response.pipe(res);
   });
   upstream.on("error", () => {
     if (!res.headersSent) res.writeHead(503, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Workspace is temporarily unavailable." }));
+    res.end(JSON.stringify(api ? { statusCode: 503, error: "Service Unavailable", message: "Workspace is temporarily unavailable." } : { error: "Workspace is temporarily unavailable." }));
   });
   req.on("aborted", () => upstream.destroy());
   req.pipe(upstream);
 }
 
-export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: WorkspaceResolver) {
+export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: WorkspaceResolver, directory?: ApiKeyDirectory) {
   const admin = express();
   admin.disable("x-powered-by");
   admin.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -38,6 +42,21 @@ export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: Wo
   const publicApp = express();
   publicApp.disable("x-powered-by");
   publicApp.get("/health", (_req, res) => res.json({ status: "ok" }));
+  const apiPaths = ["/call", "/assistant", "/phone-number", "/v2/phone-number", "/tool"];
+  publicApp.use(apiPaths, requestContext, asyncRoute(async (req, res) => {
+    const token = bearerToken(req.get("authorization"));
+    const owner = token ? await directory?.owner(token) : undefined;
+    if (!owner) {
+      const budget = await auth.allowAttempt(`api-auth:${req.ip}`, 30, 60_000);
+      if (!budget.allowed) throw new ApiError(429, "Too many failed authentication attempts.", { "retry-after": String(budget.retryAfter) });
+      throw new ApiError(401, "Invalid or missing API key.", { "www-authenticate": "Bearer" });
+    }
+    let ports: WorkspacePorts;
+    try { ports = await pool.get(owner, false); }
+    catch { throw new ApiError(503, "Workspace is temporarily unavailable. Please retry."); }
+    proxy(req, res, ports.public, req.originalUrl, true);
+  }));
+  publicApp.use(apiPaths, apiErrorHandler);
   publicApp.use("/workspaces/:userId", async (req, res) => {
     try {
       const ports = await pool.get(req.params.userId, false);

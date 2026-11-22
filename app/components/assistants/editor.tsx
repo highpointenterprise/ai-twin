@@ -1,4 +1,5 @@
 "use client";
+import { CopyValue } from "../copy-value";
 import { useState } from "react";
 import type { AgentInput } from "@/lib/types";
 import type { ToolConfig } from "@/lib/config";
@@ -42,6 +43,7 @@ export function AssistantEditor({
       <header className="assistant-editor-header">
         <div>
           <h1>{a.name || "New assistant"}</h1>
+          {id && <CopyValue label="Assistant ID" value={id} />}
           <p>{id ? (dirty ? "Unsaved changes" : "Saved") : "New draft"}</p>
         </div>
         <div className="editor-actions">

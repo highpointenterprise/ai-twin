@@ -5,6 +5,7 @@ import type {
   TwilioConnectionStatus,
   TwilioConnectionResult,
 } from "@/lib/twilio";
+import { CopyValue } from "../copy-value";
 import { api } from "../api";
 import { TwilioConnection } from "../twilio-connection";
 import { PurchaseNumber } from "./purchase";
@@ -54,6 +55,7 @@ function NumberRow({
               : "Unassigned"}
         </span>
       </div>
+      {number.id && <CopyValue label="Phone Number ID" value={number.id} />}
       <p className="hint">
         {number.capabilities?.voice === false ? "No voice support" : "Voice"}
         {number.capabilities?.sms ? " · SMS" : ""}

@@ -7,7 +7,10 @@ const customerSchema = z
   .object({
     number: e164,
     name: z.string().trim().min(1).max(40).optional(),
-    numberE164CheckEnabled: z.boolean().optional(),
+    numberE164CheckEnabled: z.boolean().refine((v) => v, "Disabling E.164 validation is not supported for PSTN calls.").optional(),
+    email: z.string().email().max(254).optional(),
+    externalId: z.string().max(128).optional(),
+    assistantOverrides: assistantOverridesSchema.optional(),
   })
   .strict();
 export type CustomerBody = z.infer<typeof customerSchema>;
@@ -26,6 +29,7 @@ const schedulePlanSchema = z
 export const createCallSchema = z
   .object({
     name: z.string().trim().min(1).max(40).optional(),
+    transport: z.object({ provider: z.literal("twilio"), conversationType: z.literal("voice").optional() }).strict().optional(),
     assistantId: z.string().uuid().optional(),
     assistant: assistantBodySchema.optional(),
     assistantOverrides: assistantOverridesSchema.optional(),
