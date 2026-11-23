@@ -6,6 +6,7 @@ import { ApiKeyDirectory } from "./api/v1/auth/key-directory";
 import { AuthStore } from "./auth/store";
 import { credentialKey } from "./storage/credentials";
 import { WorkspacePool } from "./workspaces/pool";
+import { workspaceIdentity } from "./workspaces/identity";
 import { attachWorkspaceMedia, createWorkspaceGateway } from "./workspaces/gateway";
 
 async function main() {
@@ -28,7 +29,9 @@ async function main() {
     try {
       for await (const workspace of db.collection("workspaces").find({})) {
         if (closing) break;
-        const tenant = mongo.db(workspace.database);
+        const tenant = mongo.db(env.WORKSPACE_DATABASE_FORMAT === "compact"
+          ? workspaceIdentity(workspace.userId, { ...process.env, MONGODB_DATABASE: env.MONGODB_DATABASE }).database
+          : workspace.database);
         const [queued, pending, recordings, webhooks] = await Promise.all([
           tenant.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } }),
           tenant.collection("calls").findOne({ storagePending: true }),

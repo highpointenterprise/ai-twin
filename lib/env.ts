@@ -39,6 +39,7 @@ const schema = z.object({
   AUTH_DATABASE: z.string().default(""),
   OBJECT_PREFIX: z.string().default(""),
   MAX_WORKSPACE_WORKERS: z.coerce.number().int().min(1).max(256).default(32),
+  WORKSPACE_DATABASE_FORMAT: z.enum(["legacy", "compact"]).default("legacy"),
   ADMIN_HOST: z.string().default("127.0.0.1"),
   AUTH_API_SECRET: z.string().default(""),
   MAX_CONCURRENT_CALLS: z.coerce.number().int().positive().default(50),

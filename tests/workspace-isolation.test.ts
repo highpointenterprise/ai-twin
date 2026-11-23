@@ -19,6 +19,19 @@ import { ApiKeyStore } from "../server/api/v1/auth/api-keys";
 import { ObjectStore } from "../server/storage/objects";
 
 const secret = randomBytes(32).toString("hex");
+test("compact workspace databases fit Atlas limits without changing other namespaces", () => {
+  const user = randomUUID();
+  const base = { NODE_ENV: "test" as const, AUTH_API_SECRET: secret, CREDENTIAL_ENCRYPTION_KEY: secret, MONGODB_DATABASE: "ai_twin" };
+  const legacy = workspaceEnvironment(user, base);
+  const compact = workspaceEnvironment(user, { ...base, WORKSPACE_DATABASE_FORMAT: "compact" });
+  assert.match(legacy.MONGODB_DATABASE!, /^workspace_[a-f0-9]{40}$/);
+  assert.ok(Buffer.byteLength(compact.MONGODB_DATABASE!) <= 38);
+  assert.match(compact.MONGODB_DATABASE!, /^ws_[A-Za-z0-9_-]{27}$/);
+  assert.equal(Buffer.from(compact.MONGODB_DATABASE!.slice(3), "base64url").toString("hex"), legacy.MONGODB_DATABASE!.slice(10));
+  for (const key of ["REDIS_PREFIX", "DATA_DIR", "STREAM_SECRET", "CREDENTIAL_ENCRYPTION_KEY", "OBJECT_PREFIX"]) assert.equal(compact[key], legacy[key]);
+  assert.notEqual(compact.MONGODB_DATABASE, workspaceIdentity(randomUUID(), { ...base, WORKSPACE_DATABASE_FORMAT: "compact" }).database);
+  assert.notEqual(compact.MONGODB_DATABASE, workspaceIdentity(user, { ...base, MONGODB_DATABASE: "other", WORKSPACE_DATABASE_FORMAT: "compact" }).database);
+});
 test("workspace identities isolate storage, signing keys, credentials and browser profiles", async () => {
   const base = { ...process.env, AUTH_API_SECRET: secret, CREDENTIAL_ENCRYPTION_KEY: secret, MONGODB_DATABASE: "legacy", TWILIO_AUTH_TOKEN: "legacy-secret", TOOL_CRM_TOKEN: "legacy-tool", MEET_GOOGLE_STORAGE_STATE_PATH: "legacy-profile" };
   const a = workspaceEnvironment(randomUUID(), base), b = workspaceEnvironment(randomUUID(), base);
@@ -39,7 +52,7 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   const s3 = createServer((req, res) => { res.writeHead(req.method === "HEAD" ? 200 : 503); res.end(); }).listen(0, "127.0.0.1");
   await new Promise<void>(resolve => s3.once("listening", resolve));
   const base = {
-    ...process.env, NODE_ENV: "production" as const, MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DATABASE: database,
+    ...process.env, NODE_ENV: "production" as const, WORKSPACE_DATABASE_FORMAT: "compact", MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DATABASE: database,
     PUBLIC_BASE_URL: "https://calls.example.com",
     REDIS_URL: process.env.TEST_REDIS_URL!, DATA_DIR: directory, AUTH_API_SECRET: secret, CREDENTIAL_ENCRYPTION_KEY: secret,
     S3_ENDPOINT: `http://127.0.0.1:${(s3.address() as { port: number }).port}`, S3_BUCKET: "test", S3_REGION: "us-east-1", S3_FORCE_PATH_STYLE: "true", S3_ACCESS_KEY_ID: "test", S3_SECRET_ACCESS_KEY: "test",

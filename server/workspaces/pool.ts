@@ -20,7 +20,7 @@ export class WorkspacePool {
     const identity = workspaceIdentity(userId, this.base);
     const workspaces = this.db.collection("workspaces");
     if (create) {
-      await workspaces.updateOne({ _id: userId as never }, { $setOnInsert: { ...identity, createdAt: new Date() } }, { upsert: true });
+      await workspaces.updateOne({ _id: userId as never }, { $set: identity, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
     } else if (!(await workspaces.findOne({ _id: userId as never }))) {
       throw new Error("Unknown workspace.");
     }
