@@ -1019,6 +1019,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
       }
       await registry.load(b.CallSid);
       if (status) registry.update(b.CallSid, status);
+      if (status === "completed" && !registry.get(b.CallSid)?.endedReason)
+        registry.patch(b.CallSid, { endedReason: "call.in-progress.twilio-completed-call" });
       if (status === "failed")
         registry.patch(b.CallSid, { endedReason: b.CallStatus });
       traces.for(b.CallSid).log("twilio.status", {

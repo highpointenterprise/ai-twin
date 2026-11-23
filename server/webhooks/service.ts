@@ -1,13 +1,8 @@
-import { createHash } from "node:crypto";
 import type { Db } from "mongodb";
 import type { MongoCallRepository } from "../storage/calls";
 import type { ObjectStore } from "../storage/objects";
 import { logEvent } from "../observability/trace";
-import {
-  endOfCallReport,
-  type EndOfCallReport,
-  type ReportArtifact,
-} from "./end-of-call-report";
+import { endOfCallReport, type ReportArtifact } from "./end-of-call-report";
 import {
   MAX_DELIVERY_ATTEMPTS,
   ServerEventOutbox,
@@ -24,6 +19,7 @@ export class AssistantServerEvents {
   private timer?: NodeJS.Timeout;
   private running?: Promise<void>;
   private stopped = false;
+  private recoverAt = 0;
   private readonly abort = new AbortController();
   constructor(
     private readonly deps: {
@@ -51,75 +47,65 @@ export class AssistantServerEvents {
     this.timer.unref();
   }
   async enqueueEndOfCall(sid: string) {
-    const { calls, db, objects, userId, baseUrl } = this.deps;
-    const call = await calls.get(sid);
-    // Never fall back to the current assistant: old/unowned calls must not inherit a destination.
+    const call = await this.deps.calls.get(sid);
+    // Use the call's snapshot; later assistant edits must not redirect old reports.
     const server = call?.assistant?.server;
     if (
       !call ||
       !server?.url ||
-      (await this.outbox.exists(sid, "end-of-call-report"))
+      !["completed", "failed"].includes(call.status) ||
+      !call.endedAt
     )
       return;
-    if (!["completed", "failed"].includes(call.status) || !call.endedAt) return;
-    if (call.cost?.reconciliationStatus !== "complete")
-      throw new Error("Call billing is not ready for its end-of-call report.");
-    const recording = await db
-      .collection("recording_requests")
-      .findOne({ _id: sid as never });
-    if (recording && ["starting", "started"].includes(recording.state)) {
-      if (Date.now() - Date.parse(call.endedAt) < 10 * 60_000)
-        throw new Error(
-          "Call recording is not ready for its end-of-call report.",
-        );
-      logEvent("webhook.recording_unavailable", {
-        sid,
-        message:
-          "Recording did not arrive within ten minutes; reporting available artifacts.",
-      });
-    }
-    const request = await db
-      .collection("call_requests")
-      .findOne({ orgId: userId, providerCallSid: sid });
-    const phoneNumber = await db.collection("phone_numbers").findOne({
-      orgId: userId,
-      number: call.direction === "inbound" ? call.to : call.from,
-    });
-    const report = endOfCallReport({
-      call,
-      transcript: await calls.completeTranscript(sid),
-      orgId: userId,
-      baseUrl,
-      callId: request?.id,
-      customerName: request?.customer?.name,
-      name: request?.name,
-      createdAt: request?.createdAt,
-      phoneNumberId: request?.phoneNumberId ?? phoneNumber?.id,
-    });
-    const body = JSON.stringify(report);
-    const hash = createHash("sha256").update(body).digest("hex");
-    const payload = await objects.put(
-      `calls/${encodeURIComponent(sid)}/server-events/${hash}.json`,
-      body,
-      "application/json",
-    );
-    const current = await calls.get(sid);
-    if (!current || current.storageRevision !== call.storageRevision)
-      throw new Error("Call changed while preparing its end-of-call report.");
     await this.outbox.enqueue({
       callId: sid,
       event: "end-of-call-report",
       url: server.url,
       timeoutSeconds: server.timeoutSeconds,
-      payload,
+      dueAt: new Date(Date.parse(call.endedAt) + 5000),
     });
+  }
+  private async recoverPending() {
+    if (Date.now() < this.recoverAt) return;
+    const pending = await this.deps.db
+      .collection("calls")
+      .aggregate<{ sid: string }>([
+        {
+          $match: {
+            storagePending: true,
+            status: { $in: ["completed", "failed"] },
+            "assistant.server.url": { $type: "string", $ne: "" },
+          },
+        },
+        {
+          $lookup: {
+            from: "server_event_deliveries",
+            let: { sid: "$sid" },
+            as: "delivery",
+            pipeline: [
+              {
+                $match: {
+                  userId: this.deps.userId,
+                  event: "end-of-call-report",
+                  $expr: { $eq: ["$callId", "$$sid"] },
+                },
+              },
+              { $limit: 1 },
+            ],
+          },
+        },
+        { $match: { "delivery.0": { $exists: false } } },
+        { $limit: 100 },
+        { $project: { sid: 1 } },
+      ])
+      .toArray();
+    for (const { sid } of pending) await this.enqueueEndOfCall(sid);
+    this.recoverAt = Date.now() + 30_000;
   }
   tick(): Promise<void> {
     if (this.stopped) return Promise.resolve();
-    return (this.running ??= Promise.allSettled([
-      this.deliverOne(),
-      this.deliverOne(),
-    ])
+    return (this.running ??= this.recoverPending()
+      .then(() => Promise.allSettled([this.deliverOne(), this.deliverOne()]))
       .then((results) => {
         const failure = results.find((result) => result.status === "rejected");
         if (failure?.status === "rejected") throw failure.reason;
@@ -190,12 +176,28 @@ export class AssistantServerEvents {
     const call = await this.deps.calls.get(delivery.callId);
     if (!call)
       throw new DeliveryError("Call was deleted; delivery cancelled.", false);
-    const stream = await this.deps.objects.read(delivery.payload.key);
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-    const report = JSON.parse(
-      Buffer.concat(chunks).toString("utf8"),
-    ) as EndOfCallReport;
+    const { db, userId, baseUrl, calls } = this.deps;
+    const request = await db
+      .collection("call_requests")
+      .findOne({ orgId: userId, providerCallSid: call.sid });
+    const phoneNumber = await db.collection("phone_numbers").findOne({
+      orgId: userId,
+      number: call.direction === "inbound" ? call.to : call.from,
+    });
+    // MongoDB is the durable source; reports must not depend on S3 or billing availability.
+    const report = endOfCallReport({
+      call,
+      transcript: await calls.completeTranscript(call.sid),
+      orgId: userId,
+      baseUrl,
+      timestamp: delivery.createdAt.getTime(),
+      callId: request?.id,
+      customerName: request?.customer?.name,
+      name: request?.name,
+      createdAt: request?.createdAt,
+      phoneNumberId:
+        request?.phoneNumberId ?? call.phoneNumberId ?? phoneNumber?.id,
+    });
     const artifact = report.message.artifact;
     const fields = {
       monoRecording: "presignedMonoUrl",
@@ -206,13 +208,18 @@ export class AssistantServerEvents {
     } as const;
     for (const [kind, field] of Object.entries(fields)) {
       const stored = call.artifact?.[kind as keyof typeof fields];
-      if (stored)
-        artifact[
-          field as keyof Pick<
-            ReportArtifact,
-            (typeof fields)[keyof typeof fields]
-          >
-        ] = await this.deps.objects.signedUrl(stored.key, 900);
+      if (stored) {
+        try {
+          artifact[
+            field as keyof Pick<
+              ReportArtifact,
+              (typeof fields)[keyof typeof fields]
+            >
+          ] = await this.deps.objects.signedUrl(stored.key, 900);
+        } catch {
+          logEvent("webhook.artifact_url_unavailable", { sid: call.sid, kind });
+        }
+      }
     }
     if (Object.values(fields).some((field) => artifact[field]))
       artifact.presignedUrlsExpiresAt = new Date(

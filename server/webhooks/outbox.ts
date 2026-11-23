@@ -11,7 +11,7 @@ export interface Delivery {
   event: ServerEventType;
   url: string;
   timeoutSeconds: number;
-  payload: StoredObject;
+  payload?: StoredObject;
   state: "pending" | "delivering" | "delivered" | "failed";
   attempts: number;
   dueAt: Date;
@@ -58,7 +58,7 @@ export class ServerEventOutbox {
     input: Pick<
       Delivery,
       "callId" | "event" | "url" | "timeoutSeconds" | "payload"
-    >,
+    > & { dueAt?: Date },
   ) {
     const now = new Date();
     try {
@@ -70,7 +70,7 @@ export class ServerEventOutbox {
             userId: this.userId,
             state: "pending",
             attempts: 0,
-            dueAt: now,
+            dueAt: input.dueAt ?? now,
             createdAt: now,
           },
         },

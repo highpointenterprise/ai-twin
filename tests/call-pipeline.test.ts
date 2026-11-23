@@ -80,7 +80,7 @@ for (const direction of ["inbound", "outbound"] as const)
         agent({
           voiceId: "",
           firstMessageMode: "assistant-speaks-first",
-          firstMessage: "Hello, can you hear me?",
+          firstMessage: `Hello, this is the ${direction} test.`,
           startSpeakingPlan: { waitSeconds: 0.05 },
         }),
       ),
@@ -249,6 +249,7 @@ for (const direction of ["inbound", "outbound"] as const)
           .view()
           .transcript.filter((l) => l.role === "agent").length === 2,
     );
+    await until(() => packets.filter((p) => p.event === "media").length === 2);
     assert.equal(voices, 2);
     assert.equal(transcribed, 1);
     assert.equal(packets.filter((p) => p.event === "media").length, 2);

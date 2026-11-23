@@ -228,12 +228,12 @@ async function main(): Promise<void> {
         await artifacts.enqueue(sid, `recording-cost-${recordingSid}`, 1000);
         return;
       }
+      await serverEvents.enqueueEndOfCall(sid);
       let result = await billing.finalize(sid);
       await calls.exportArtifacts(sid, objects);
       if ((await billing.pricing.forCall(sid)).hosting.storage) result = await billing.finalize(sid);
       if (result.retryReasons.length)
         throw new Error(result.retryReasons.join(" "));
-      await serverEvents.enqueueEndOfCall(sid);
       await calls.markArchived(sid, record.storageRevision ?? 0);
       if (record.parentCallSid)
         await artifacts.enqueue(
@@ -276,6 +276,7 @@ async function main(): Promise<void> {
   const finalizeCall = async (sid: string) => {
     await registry.flush();
     await traces.flush();
+    await serverEvents.enqueueEndOfCall(sid);
     const call = await calls.get(sid);
     if (call)
       await artifacts.enqueue(sid, `final-v${call.storageRevision ?? 0}`, 5000);

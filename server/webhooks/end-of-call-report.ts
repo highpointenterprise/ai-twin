@@ -1,6 +1,6 @@
 import type { AgentConfig, CallCost, TranscriptLine } from "../../lib/types";
 import type { StoredCall } from "../storage/calls";
-import { callEndedReason } from "../api/v1/mappers/call";
+import { callEndedReasonFor } from "../../lib/call-outcomes";
 
 export interface ReportArtifact {
   messages: {
@@ -120,7 +120,7 @@ function costView(
   costSummary?: Record<string, unknown>;
   usage?: CallCost["usage"];
 } {
-  if (!cost) return {};
+  if (!cost) return { costSummary: { status: "incomplete", reconciliationStatus: "pending" } };
   const groups = new Map<string, typeof cost.lines>();
   for (const line of cost.lines) {
     const key = `${line.type}:${line.provider}:${line.model ?? ""}`;
@@ -220,23 +220,6 @@ function costView(
       : {}),
   };
 }
-const knownReasons = new Set([
-  "customer-ended-call",
-  "assistant-ended-call",
-  "assistant-forced-hangup",
-  "assistant-forwarded-call",
-  "voicemail",
-  "silence-timed-out",
-  "exceeded-max-duration",
-  "customer-busy",
-  "customer-did-not-answer",
-  "twilio-failed-to-connect-call",
-  "phone-call-provider-closed-websocket",
-  "pipeline-error-deepgram-transcriber-failed",
-  "pipeline-error-eleven-labs-voice-failed",
-  "pipeline-error-openai-llm-failed",
-]);
-
 // Assistant server event contract.
 export function endOfCallReport(input: {
   call: StoredCall;
@@ -307,17 +290,7 @@ export function endOfCallReport(input: {
     artifact.recordingUrl = url("mono-recording");
   }
   if (call.artifact?.logs) artifact.logUrl = url("call-logs");
-  const mapped = callEndedReason(
-    call.endedReason ?? (call.status === "failed" ? "failed" : undefined),
-    "ended",
-  )!;
-  const endedReason = knownReasons.has(mapped)
-    ? mapped
-    : call.status === "failed"
-      ? call.startedAt
-        ? "phone-call-provider-closed-websocket"
-        : "twilio-failed-to-connect-call"
-      : "customer-ended-call";
+  const endedReason = callEndedReasonFor(call);
   const customer = {
     number: call.direction === "inbound" ? call.from : call.to,
     ...(input.customerName ? { name: input.customerName } : {}),
@@ -345,10 +318,9 @@ export function endOfCallReport(input: {
         type: call.type,
         status: "ended",
         endedReason,
-        ...(mapped !== endedReason || call.cost?.warnings.length
+        ...(call.cost?.warnings.length
           ? {
               endedMessage: [
-                mapped !== endedReason ? call.endedReason : "",
                 ...(call.cost?.warnings ?? []),
               ]
                 .filter(Boolean)
