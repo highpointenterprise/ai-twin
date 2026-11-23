@@ -15,6 +15,7 @@ export function warmTransferRoutes(
   service: WarmTransferCoordinator,
   contexts: ContextStore,
   verified: RequestHandler,
+  recordResponse?: (sid: string, twiml: string) => Promise<string>,
 ): Router {
   const router = Router();
   const audio = holdWav();
@@ -29,7 +30,10 @@ export function warmTransferRoutes(
       const r = service.get(req.params.id),
         action = req.params.action;
       res.type("text/xml");
-      const send = async (body: string) => { await service.flush(); res.send(body); };
+      const send = async (body: string) => {
+        await service.flush();
+        res.send(recordResponse ? await recordResponse(callSchema.parse(req.body).CallSid, body) : body);
+      };
       const stream = async (contextId: string, extension = "") => {
         const context = await contexts.getAsync(contextId);
         if (!context) return "<Response><Hangup/></Response>";

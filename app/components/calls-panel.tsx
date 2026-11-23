@@ -9,6 +9,7 @@ import type {
 } from "../../lib/types";
 import { api } from "./api";
 import { callOutcome } from "../../lib/call-outcomes";
+import { CallRecordings } from "./call-recordings";
 import { CallServerEvents } from "./call-server-events";
 interface TransferView {
   id: string;
@@ -323,6 +324,7 @@ export function CallsPanel({
               <CallServerEvents key={active.sid} sid={active.sid} />
             </div>
           )}
+          {activeOutcome && <CallRecordings key={active.sid} sid={active.sid} />}
           <div className="row">
             <button
               className="ghost"

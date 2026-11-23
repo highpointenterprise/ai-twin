@@ -1,3 +1,4 @@
+import { recordingTwiml, type CallRecordings } from "../recordings/service";
 import {
   numberSearchSchema,
   numberPurchaseSchema,
@@ -72,8 +73,8 @@ export interface HttpDeps {
   calls?: MongoCallRepository;
   objects?: ObjectStore;
   callState?: RedisCallState;
+  recordings?: CallRecordings;
   recordingReady?: (sid: string, recordingSid: string) => Promise<void>;
-  startRecording?: (sid: string) => Promise<void>;
 }
 const configPageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(1000).default(100),
@@ -705,6 +706,20 @@ export const createAdminApp = (
       });
     }),
   );
+  app.get("/api/calls/:sid/recordings", handle(async (req, res) => {
+    if (!d.recordings) throw new HttpError(503, "Recording service is unavailable.");
+    const view = await d.recordings.view(req.params.sid);
+    if (!view) throw new HttpError(404, "Call not found.");
+    return res.json(view);
+  }));
+  app.post("/api/calls/:sid/recordings/retry", handle(async (req, res) => {
+    if (!d.recordings || !d.calls) throw new HttpError(503, "Recording service is unavailable.");
+    const call = await d.calls.get(req.params.sid);
+    if (!call) throw new HttpError(404, "Call not found.");
+    if (!["completed", "failed"].includes(call.status)) throw new HttpError(409, "Wait for the call to end.");
+    await d.recordings.retry(call.sid);
+    return res.status(202).json({ accepted: true });
+  }));
   app.get(
     "/api/calls/:sid/artifacts/:kind",
     handle(async (req, res) => {
@@ -713,12 +728,12 @@ export const createAdminApp = (
       const record = await d.calls.get(req.params.sid);
       if (!record) throw new HttpError(404, "Call not found.");
       const kind = z
-        .enum(["transcript", "messages", "logs", "recording"])
+        .enum(["transcript", "messages", "logs", "recording", "monoRecording", "assistantRecording", "customerRecording"])
         .parse(req.params.kind);
       const artifact = record.artifact?.[kind];
       if (!artifact) throw new HttpError(404, "Artifact is not available yet.");
       return res.json({
-        url: await d.objects.signedUrl(artifact.key),
+        url: await d.objects.signedUrl(artifact.key, 300, req.query.play === "true" ? "inline" : "attachment"),
         expiresIn: 300,
       });
     }),
@@ -786,6 +801,12 @@ export const createPublicApp = (d: HttpDeps): Express => {
     CallStatus: z.string().optional(),
     CallDuration: z.string().optional(),
   });
+  const recordResponse = async (sid: string, twiml: string) => {
+    await registry.flush();
+    if (d.recordings && await d.recordings.prepare(sid))
+      return recordingTwiml(twiml, `${env.PUBLIC_BASE_URL}/twilio/recording-status`);
+    return twiml;
+  };
   const stream = async (agentId: string, callId: string) => {
     const sid = (await contexts.getAsync(callId))?.sid;
     if (sid) {
@@ -809,11 +830,12 @@ export const createPublicApp = (d: HttpDeps): Express => {
           );
       }, 15000).unref();
     }
-    return telephony.streamTwiml(
+    const twiml = telephony.streamTwiml(
       `${env.PUBLIC_BASE_URL.replace(/^https/, "wss")}/media`,
       { agentId, callId, token: signStreamToken(agentId, callId) },
       `${env.PUBLIC_BASE_URL}/twilio/stream-status`,
     );
+    return sid ? recordResponse(sid, twiml) : twiml;
   };
   app.post(
     "/twilio/voice/inbound",
@@ -961,7 +983,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
         });
         await registry.flush();
         await traces.flush();
-        return res.send("<Response><Hangup/></Response>");
+        return res.send(await recordResponse(b.CallSid, "<Response><Hangup/></Response>"));
       }
       await contexts.updatePurposeAsync(q.callId, action);
       await registry.flush();
@@ -1106,13 +1128,16 @@ export const createPublicApp = (d: HttpDeps): Express => {
           RecordingStatus: z.string(),
         })
         .parse(req.body);
-      if (body.RecordingStatus === "completed")
+      if (d.recordings) {
+        if (!await d.calls?.get(body.CallSid)) throw new HttpError(404, "Call not found.");
+        await d.recordings.accept(body.CallSid, body.RecordingSid, body.RecordingStatus);
+      } else if (body.RecordingStatus === "completed")
         await d.recordingReady?.(body.CallSid, body.RecordingSid);
       return res.status(204).end();
     }),
   );
   if (d.warmTransfers)
-    app.use(warmTransferRoutes(d.warmTransfers, contexts, verified));
+    app.use(warmTransferRoutes(d.warmTransfers, contexts, verified, recordResponse));
   app.use(onError);
   return app;
 };

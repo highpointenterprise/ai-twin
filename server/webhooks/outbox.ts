@@ -113,6 +113,11 @@ export class ServerEventOutbox {
     );
     return result.matchedCount === 1;
   }
+  async defer(delivery: Delivery, dueAt: Date) {
+    await this.collection.updateOne({ _id: delivery._id, userId: this.userId, claim: delivery.claim, state: "delivering" }, {
+      $set: { state: "pending", dueAt }, $inc: { attempts: -1 }, $unset: { claim: "", leaseUntil: "" },
+    });
+  }
   async success(delivery: Delivery, statusCode: number) {
     await this.collection.updateOne(
       {

@@ -356,7 +356,7 @@ export class MongoCallRepository {
   }
   async setRecordingUsage(sid: string, recordingId: string, durationSec: number): Promise<void> {
     if (!Number.isFinite(durationSec) || durationSec < 0) throw new Error("Invalid recording duration.");
-    await this.calls.updateOne({ _id: sid }, { $set: { recordingDurationSec: durationSec, recordingId, updatedAt: Date.now() } });
+    await this.calls.updateOne({ _id: sid }, { $set: { recordingDurationSec: durationSec, recordingId, updatedAt: Date.now(), storagePending: true }, $inc: { storageRevision: 1 } });
   }
   async setArtifact(sid: string, kind: ArtifactKind, artifact: StoredObject): Promise<void> {
     await this.calls.updateOne({ _id: sid }, { $set: { [`artifact.${kind}`]: artifact, updatedAt: Date.now() } });

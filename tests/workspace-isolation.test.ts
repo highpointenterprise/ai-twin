@@ -114,8 +114,8 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   assert.deepEqual(await (await req(0, "/api/calls/CA-private-a/server-events")).json(), []);
   assert.equal(agent.server.url, "https://a.example/webhook");
   assert.deepEqual(await (await req(1, "/api/calls")).json(), []);
-  for (const path of ["", "/trace", "/usage", "/artifacts/logs", "/transfer", "/server-events"]) assert.equal((await req(1, `/api/calls/CA-private-a${path}`)).status, 404);
-  for (const path of ["end", "storage/retry", "transfer/retry", "server-events/retry"]) assert.equal((await req(1, `/api/calls/CA-private-a/${path}`, "POST", {})).status, 404);
+  for (const path of ["", "/trace", "/usage", "/artifacts/logs", "/transfer", "/server-events", "/recordings", "/artifacts/assistantRecording", "/artifacts/customerRecording", "/artifacts/monoRecording"]) assert.equal((await req(1, `/api/calls/CA-private-a${path}`)).status, 404);
+  for (const path of ["end", "storage/retry", "transfer/retry", "server-events/retry", "recordings/retry"]) assert.equal((await req(1, `/api/calls/CA-private-a/${path}`, "POST", {})).status, 404);
   assert.equal((await (await req(0, "/api/meetings")).json()).length, 1);
   assert.deepEqual(await (await req(1, "/api/meetings")).json(), []);
   for (const path of ["", "/trace"]) assert.equal((await req(1, `/api/meetings/${meetingId}${path}`)).status, 404);

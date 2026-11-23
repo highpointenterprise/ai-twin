@@ -29,12 +29,13 @@ async function main() {
       for await (const workspace of db.collection("workspaces").find({})) {
         if (closing) break;
         const tenant = mongo.db(workspace.database);
-        const [queued, pending, webhooks] = await Promise.all([
+        const [queued, pending, recordings, webhooks] = await Promise.all([
           tenant.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } }),
           tenant.collection("calls").findOne({ storagePending: true }),
+          tenant.collection("recording_requests").findOne({ state: { $in: ["requested", "starting", "started", "processing"] } }),
           tenant.collection("server_event_deliveries").findOne({ userId: workspace.userId, state: { $in: ["pending", "delivering"] } }),
         ]);
-        if (!closing && (queued || pending || webhooks)) {
+        if (!closing && (queued || pending || recordings || webhooks)) {
           try { await pool.get(workspace.userId, false); }
           catch { console.error("workspace.recovery_deferred"); }
         }
