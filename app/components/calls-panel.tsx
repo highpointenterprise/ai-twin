@@ -8,6 +8,8 @@ import type {
   PhoneNumberView,
 } from "../../lib/types";
 import { api } from "./api";
+import { callOutcome } from "../../lib/call-outcomes";
+import { CallServerEvents } from "./call-server-events";
 interface TransferView {
   id: string;
   phase: string;
@@ -135,6 +137,7 @@ export function CallsPanel({
     }
   };
   const active = calls.find((c) => c.sid === selected);
+  const activeOutcome = active ? callOutcome(active) : undefined;
   return (
     <div className="fields">
       <div className="section-head">
@@ -240,7 +243,9 @@ export function CallsPanel({
                     </td>
                     <td>{c.direction === "outbound" ? c.to : c.from}</td>
                     <td>{c.status}</td>
-                    <td>{c.endedReason ?? c.answeredBy ?? "—"}</td>
+                    <td title={callOutcome(c)?.reason}>
+                      {callOutcome(c)?.label ?? "In progress"}
+                    </td>
                     <td>
                       {c.cost ? (
                         <>
@@ -307,6 +312,17 @@ export function CallsPanel({
             )}
           </div>
           <p className="mono subtle">{active.sid}</p>
+          {activeOutcome && (
+            <div>
+              <p><strong>Outcome:</strong> {activeOutcome.label}</p>
+              <p className="mono subtle">{activeOutcome.reason}</p>
+              <p className="hint">
+                This describes how the call ended; it does not evaluate whether
+                a business goal was achieved.
+              </p>
+              <CallServerEvents key={active.sid} sid={active.sid} />
+            </div>
+          )}
           <div className="row">
             <button
               className="ghost"

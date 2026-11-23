@@ -1,3 +1,4 @@
+import { normalizeEndedReason, callEndedReasonFor } from "../../../../lib/call-outcomes";
 import type { CallCost, TranscriptLine } from "../../../../lib/types";
 import type { StoredCall } from "../../../storage/calls";
 import type { CallRequestDocument } from "../repositories/call-requests";
@@ -14,31 +15,8 @@ export interface CallViewInput {
   transcript?: readonly TranscriptLine[];
 }
 
-const ENDED_REASONS: Readonly<Record<string, string>> = {
-  "user-ended": "assistant-forced-hangup",
-  voicemail: "voicemail",
-  "answer-detection-ended": "voicemail",
-  "max-duration": "exceeded-max-duration",
-  "silence-timeout": "silence-timed-out",
-  "screening-timeout": "silence-timed-out",
-  "no-answer": "customer-did-not-answer",
-  busy: "customer-busy",
-  failed: "twilio-failed-to-connect-call",
-  canceled: "assistant-forced-hangup",
-  "server-restarted": "call.in-progress.error-server-restarted",
-  "media-session-error": "phone-call-provider-closed-websocket",
-  "transcriber-error": "pipeline-error-deepgram-transcriber-failed",
-  "speech-provider-error": "pipeline-error-eleven-labs-voice-failed",
-};
-
-export const callEndedReason = (raw: string | undefined, status: ApiCallStatus): string | undefined => {
-  if (status !== "ended") return undefined;
-  if (!raw) return "customer-ended-call";
-  if (raw.startsWith("transfer-") || raw.includes("transfer")) return "assistant-forwarded-call";
-  if (raw.startsWith("media-stream-error")) return "phone-call-provider-closed-websocket";
-  if (raw.endsWith("-provider-error")) return "pipeline-error-openai-llm-failed";
-  return ENDED_REASONS[raw] ?? raw;
-};
+export const callEndedReason = (raw: string | undefined, status: ApiCallStatus): string | undefined =>
+  status === "ended" ? normalizeEndedReason(raw) : undefined;
 
 export const callStatus = (request?: CallRequestDocument, call?: StoredCall): ApiCallStatus => {
   if (request?.phase === "scheduled") return "scheduled";
@@ -154,7 +132,7 @@ export const toApiCall = (input: CallViewInput): Record<string, unknown> => {
     type: outbound ? "outboundPhoneCall" : "inboundPhoneCall",
     status,
     ...(status === "ended"
-      ? { endedReason: failure?.reason ?? callEndedReason(call?.endedReason, status) }
+      ? { endedReason: failure?.reason ?? callEndedReasonFor(call ?? { status: "ended" }) }
       : {}),
     ...(failure ? { endedMessage: failure.message } : {}),
     ...(request?.name ? { name: request.name } : {}),

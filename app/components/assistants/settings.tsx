@@ -259,9 +259,9 @@ export function AssistantSettings({
               />
             </label>
             <p className="hint">
-              Receives the End of Call Report as a JSON POST after call
-              processing completes. Leave blank to disable. Use a public HTTPS
-              endpoint.
+              Receives the End of Call Report as a JSON POST shortly after the
+              call ends. Final costs and recordings may still be processing.
+              Leave blank to disable. Use a public HTTPS endpoint.
             </p>
             {number(
               "Webhook timeout (seconds)",

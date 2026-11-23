@@ -1,4 +1,14 @@
 import { test } from "node:test";
+import twilio from "twilio";
+import { env } from "../lib/env";
+import { createPublicApp } from "../server/http/routes";
+import { CallRegistry } from "../server/store/calls";
+import { TraceStore } from "../server/observability/trace";
+import { AgentStore } from "../server/store/agents";
+import { ToolRegistry } from "../server/tools/registry";
+import { ContextStore } from "../server/store/contexts";
+import { SessionPool } from "../server/engine/pool";
+import { telephony } from "./helpers";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
@@ -49,6 +59,7 @@ const call: StoredCall = {
   from: "+14155550100",
   to: "+14155550101",
   status: "completed",
+  endedReason: "customer-ended-call",
   createdAt: "2026-11-23T00:00:00.000Z",
   startedAt: "2026-11-23T00:00:01.000Z",
   endedAt: "2026-11-23T00:01:01.000Z",
@@ -425,7 +436,7 @@ test(
 );
 
 test(
-  "legacy calls stay unconfigured; reports wait for processing and include every transcript entry",
+  "legacy calls stay unconfigured; pending billing and broken object storage do not block complete reports",
   { skip: !process.env.TEST_MONGODB_URI, timeout: 30000 },
   async (t) => {
     const mongo = await new MongoClient(
@@ -438,13 +449,19 @@ test(
     });
     const calls = new MongoCallRepository(db);
     await calls.initialize();
+    const received: string[] = [];
+    const unavailableObjects = {
+      put: async () => { throw new Error("S3 unavailable"); },
+      read: async () => { throw new Error("S3 unavailable"); },
+      signedUrl: async () => { throw new Error("S3 unavailable"); },
+    } as unknown as ObjectStore;
     const service = new AssistantServerEvents({
       db,
       calls,
-      objects: memoryObjects(),
+      objects: unavailableObjects,
       userId: owner,
       baseUrl: "https://api.example",
-      send: async () => 204,
+      send: async (request) => { received.push(request.body); return 204; },
     });
     await service.initialize();
     t.after(() => service.close());
@@ -457,13 +474,8 @@ test(
         { sid: call.sid },
         { $set: { assistant, "cost.reconciliationStatus": "pending" } },
       );
-    await assert.rejects(service.enqueueEndOfCall(call.sid), /billing/);
-    await db
-      .collection("calls")
-      .updateOne(
-        { sid: call.sid },
-        { $set: { "cost.reconciliationStatus": "complete" } },
-      );
+    await db.collection("recording_requests").insertOne({ _id: call.sid as never, state: "started" });
+    await calls.setArtifact(call.sid, "logs", { key: "unavailable-log", contentType: "application/json", size: 3 } as StoredObject);
     const entries = Array.from({ length: 5100 }, (_, i) => ({
       _id: `${call.sid}:${String(i).padStart(5, "0")}`,
       callId: call.sid,
@@ -477,6 +489,15 @@ test(
     assert.equal((await calls.completeTranscript(call.sid)).length, 5100);
     await service.enqueueEndOfCall(call.sid);
     assert.equal(await service.outbox.pending(), true);
+    await db.collection("server_event_deliveries").updateOne({ callId: call.sid }, { $set: { payload: { key: "legacy-report-in-unavailable-storage" } } });
+    await service.tick();
+    assert.equal(received.length, 1);
+    const report = JSON.parse(received[0]);
+    assert.equal(report.message.artifact.messages.length, 5101);
+    assert.ok(report.message.artifact.transcript.endsWith("User: Line 5099"));
+    assert.equal(report.message.call.costSummary.reconciliationStatus, "pending");
+    assert.equal(report.message.artifact.presignedLogUrl, undefined);
+    assert.equal((await service.outbox.list(call.sid))[0].state, "delivered");
     await calls.purge(call.sid, memoryObjects());
     assert.equal(await service.outbox.pending(), false);
   },
@@ -557,4 +578,63 @@ test("cost reports preserve audio and character units when charges use credits o
   assert.equal(report.message.costs?.find((line) => line.type === "transcriber")?.minutes, 1);
   assert.equal(report.message.costs?.find((line) => line.type === "voice")?.characters, 200);
   assert.deepEqual(report.message.call.usage, cost.usage);
+});
+
+
+test("signed terminal callbacks and restart recovery deliver every provider disposition without billing or S3", { skip: !process.env.TEST_MONGODB_URI, timeout: 30000 }, async (t) => {
+  const saved = { ...env };
+  Object.assign(env, { TWILIO_ACCOUNT_SID: "AC" + "1".repeat(32), TWILIO_AUTH_TOKEN: "callback-secret", PUBLIC_BASE_URL: "https://calls.example" });
+  t.after(() => Object.assign(env, saved));
+  const mongo = await new MongoClient(process.env.TEST_MONGODB_URI!).connect();
+  const db = mongo.db(`webhook_test_${randomUUID().replaceAll("-", "")}`);
+  t.after(async () => { await db.dropDatabase(); await mongo.close(); });
+  const calls = new MongoCallRepository(db);
+  await calls.initialize();
+  const registry = new CallRegistry(undefined, calls);
+  const traces = new TraceStore();
+  const transport = new MockAgent();
+  transport.disableNetConnect();
+  t.after(() => transport.close());
+  const received: ReturnType<typeof report>[] = [];
+  transport.get("https://receiver.example").intercept({ path: "/end", method: "POST" }).reply((request) => {
+    received.push(JSON.parse(String(request.body)));
+    return { statusCode: 204 };
+  }).persist();
+  const service = new AssistantServerEvents({ db, calls, objects: memoryObjects(), userId: owner, baseUrl: env.PUBLIC_BASE_URL, send: (input) => postServerEvent(input, transport) });
+  await service.initialize();
+  t.after(() => service.close());
+  const app = createPublicApp({
+    store: new AgentStore(assistant), tools: new ToolRegistry(), registry, traces,
+    contexts: new ContextStore(), pool: new SessionPool(10), telephony: telephony(), listVoices: async () => [], pendingCalls: 0,
+    finalizeCall: async (sid) => { await registry.flush(); await traces.flush(); await service.enqueueEndOfCall(sid); },
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const reasons = ["call.in-progress.twilio-completed-call", "customer-busy", "customer-did-not-answer", "manually-canceled", "twilio-failed-to-connect-call"];
+  for (const [index, status] of ["completed", "busy", "no-answer", "canceled", "failed"].entries()) {
+    const sid = "CA" + String(index + 1).repeat(32);
+    registry.create({ ...call, sid, status: "ringing", cost: undefined, endedReason: undefined, endedAt: undefined });
+    await registry.flush();
+    const body = { CallSid: sid, CallStatus: status, CallDuration: "0" };
+    const response = await fetch(`${base}/twilio/status`, { method: "POST", body: new URLSearchParams(body), headers: {
+      "x-twilio-signature": twilio.getExpectedTwilioSignature(env.TWILIO_AUTH_TOKEN, `${env.PUBLIC_BASE_URL}/twilio/status`, body),
+    } });
+    assert.equal(response.status, 204, await response.text());
+    assert.equal((await service.outbox.list(sid)).length, 1);
+  }
+  // An interrupted finalizer leaves a durable terminal record for the recovery scan.
+  await calls.create({ ...call, sid: "CA" + "6".repeat(32), cost: undefined, endedReason: "transfer-no-answer" });
+  await db.collection("server_event_deliveries").updateMany({}, { $set: { dueAt: new Date(0) } });
+  for (let i = 0; i < 3; i++) await service.tick();
+  assert.equal(received.length, 6);
+  assert.deepEqual(received.map((r) => r.message.endedReason).sort(), [...reasons, "call.forwarding.no-answer"].sort());
+  for (const event of received) {
+    assert.equal(event.message.type, "end-of-call-report");
+    assert.equal(event.message.call.endedReason, event.message.endedReason);
+    assert.deepEqual(event.message.call.costSummary, { status: "incomplete", reconciliationStatus: "pending" });
+  }
+  await service.tick();
+  assert.equal(received.length, 6);
 });
