@@ -226,7 +226,6 @@ async function main(): Promise<void> {
     if (dispatching) return;
     dispatching = true;
     try {
-      await recordings.recover();
       for (const sid of await calls.pendingArchives()) {
         const call = await calls.get(sid);
         if (call)
@@ -330,6 +329,7 @@ async function main(): Promise<void> {
     contexts,
     callState,
     maxConcurrentCalls: env.MAX_CONCURRENT_CALLS,
+    onStarted: (sid) => track(recordings.confirmStarted(sid)),
   });
   publicServer.listen(env.PORT, "127.0.0.1", () =>
     logEvent("server.public_listening", { port: env.PORT }),
@@ -363,6 +363,12 @@ async function main(): Promise<void> {
       message: error instanceof Error ? error.message : "Unknown error",
     }),
   );
+  const recoverRecordings = () => {
+    void track(recordings.recover()).catch(() => logEvent("recording.recovery_failed", { message: "Recording recovery could not access durable storage." }));
+  };
+  recoverRecordings();
+  const recordingTimer = setInterval(recoverRecordings, 30_000);
+  recordingTimer.unref();
   const workspaceBusy = async () => {
     const [recordingPending, webhooksPending, queued, pending] = await Promise.all([
       db.collection("recording_requests").findOne({ state: { $in: ["requested", "starting", "started", "processing"] } }),
@@ -380,6 +386,8 @@ async function main(): Promise<void> {
   const shutdown = (): Promise<void> =>
     (shutdownTask ??= (async () => {
       clearInterval(dispatchTimer);
+      clearInterval(recordingTimer);
+      recordings.stopRecovery();
       clearInterval(activityTimer);
       await api.dispatcher.stop();
       // Stop admitting requests first, then allow accepted callbacks and socket close

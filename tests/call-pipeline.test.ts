@@ -1,3 +1,4 @@
+import type { CallRecordings } from "../server/recordings/service";
 import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -92,6 +93,10 @@ for (const direction of ["inbound", "outbound"] as const)
       telephony: telephony(),
       listVoices: async () => [],
       pendingCalls: 0,
+      recordings: { prepare: async (callSid: string) => {
+        assert.equal(callSid, `CA-${direction}`);
+        return true;
+      } } as unknown as CallRecordings,
     };
     const real = createTwilioTelephony(),
       sid = `CA-${direction}`;
@@ -188,6 +193,9 @@ for (const direction of ["inbound", "outbound"] as const)
     });
     assert.equal(response.status, 200);
     const xml = await response.text();
+    assert.match(xml, /<Start><Recording channels="dual" track="both"/);
+    assert.ok(xml.indexOf("<Recording") < xml.indexOf("<Connect>"));
+    assert.match(xml, /recordingStatusCallback="https:\/\/test.ngrok.app\/twilio\/recording-status"/);
     assert.match(
       xml,
       /statusCallback="https:\/\/test.ngrok.app\/twilio\/stream-status"/,
