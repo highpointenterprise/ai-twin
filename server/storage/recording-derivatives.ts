@@ -23,7 +23,11 @@ export async function deriveRecordings(
   try {
     const input = join(directory, "stereo.wav");
     await pipeline(await objects.read(source.key), createWriteStream(input, { mode: 0o600 }));
+    const probe = await run(env.FFPROBE_PATH, ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "json", input], { timeout: 30_000, maxBuffer: 1024 * 1024 });
+    if (JSON.parse(probe.stdout).streams?.[0]?.channels !== 2)
+      throw new Error("A dual-channel source is required to separate assistant and customer audio.");
     const outputs = {
+      stereo: join(directory, "normalized.wav"),
       monoRecording: join(directory, "mono.wav"),
       left: join(directory, "left.wav"),
       right: join(directory, "right.wav"),
@@ -33,9 +37,10 @@ export async function deriveRecordings(
       [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", input,
         "-filter_complex", FILTER,
-        "-map", "[mix]", outputs.monoRecording,
-        "-map", "[left]", outputs.left,
-        "-map", "[right]", outputs.right,
+        "-map", "0:a:0", "-c:a", "pcm_s16le", outputs.stereo,
+        "-map", "[mix]", "-c:a", "pcm_s16le", outputs.monoRecording,
+        "-map", "[left]", "-c:a", "pcm_s16le", outputs.left,
+        "-map", "[right]", "-c:a", "pcm_s16le", outputs.right,
       ],
       { timeout: 120_000, maxBuffer: 1024 * 1024 },
     );
@@ -44,6 +49,7 @@ export async function deriveRecordings(
     const prefix = `calls/${sid}/recordings`;
     const upload = async (name: string, file: string) =>
       objects.putStream(`${prefix}/${name}.wav`, createReadStream(file), "audio/wav");
+    await calls.setArtifact(sid, "recording", await upload("stereo", outputs.stereo));
     await calls.setArtifact(sid, "monoRecording", await upload("mono", outputs.monoRecording));
     await calls.setArtifact(sid, "customerRecording", await upload("customer", customerFile));
     await calls.setArtifact(sid, "assistantRecording", await upload("assistant", assistantFile));

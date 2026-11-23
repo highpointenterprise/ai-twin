@@ -333,6 +333,6 @@ export class CallService {
     if (!loaded) throw notFound("Call not found");
     const stored = loaded.call?.artifact?.[ARTIFACT_ROUTES[route]];
     if (!stored) throw notFound("Artifact not found");
-    return this.deps.objects.signedUrl(stored.key, SIGNED_URL_SECONDS);
+    return this.deps.objects.signedUrl(stored.key, SIGNED_URL_SECONDS, route === "call-logs" ? "attachment" : "inline");
   }
 }

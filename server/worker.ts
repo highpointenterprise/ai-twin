@@ -17,7 +17,6 @@ import { logEvent, TraceStore } from "./observability/trace";
 import { createDeepgramTranscriber } from "./providers/deepgram";
 import { MongoClient } from "mongodb";
 import Redis from "ioredis";
-import { Readable } from "node:stream";
 import { MongoAgentStore, MongoToolRegistry } from "./storage/config";
 import { MongoCallRepository } from "./storage/calls";
 import { MongoTwilioCredentialStore } from "./storage/credentials";
@@ -29,7 +28,6 @@ import {
 } from "./storage/redis";
 import { BillingService } from "./billing/service";
 import { billingRoutes } from "./billing/routes";
-import { twilioClient } from "./providers/twilio";
 import {
   createElevenLabsSynthesizer,
   listElevenLabsVoices,
@@ -48,7 +46,7 @@ import { TwilioSettings } from "./providers/twilio-settings";
 import { MongoTransferStore } from "./storage/transfers";
 import { keyManagementRoutes } from "./api/v1/routes/key-management";
 import { createApiV1, createRootApp } from "./api/v1";
-import { deriveRecordings } from "./storage/recording-derivatives";
+import { CallRecordings } from "./recordings/service";
 import { metrics } from "./observability/metrics";
 import { MeetingService } from "./meetings/service";
 import { MeetingStore } from "./meetings/store";
@@ -179,52 +177,16 @@ async function main(): Promise<void> {
   await serverEvents.initialize();
   serverEvents.start();
   startupStage = "Redis job queue";
+  let recordings: CallRecordings;
   const artifacts = new ArtifactQueue(
     env.REDIS_URL,
     async ({ sid, revision }) => {
       const record = await calls.get(sid);
       if (!record) throw new Error("Call is not persisted yet.");
-      if (/^recording-RE[a-f0-9]{32}$/i.test(revision)) {
-        const recordingSid = revision.slice("recording-".length);
-        if (
-          !/^RE[a-f0-9]{32}$/i.test(recordingSid) ||
-          !/^CA[a-f0-9]{32}$/i.test(sid)
-        )
-          throw new Error("Invalid recording identity.");
-        const auth = twilioSettings.current();
-        // Resolve the recording through the provider API and verify it belongs to this call.
-        const metadata = await twilioClient(auth)
-          .recordings(recordingSid)
-          .fetch();
-        if (metadata.callSid !== sid)
-          throw new Error("Recording does not belong to call.");
-        const url = `https://api.twilio.com/2010-04-01/Accounts/${auth.accountSid}/Recordings/${recordingSid}.wav`;
-        const response = await fetch(url, {
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${auth.accountSid}:${auth.authToken}`).toString("base64")}`,
-          },
-          redirect: "error",
-          signal: AbortSignal.timeout(120000),
-        });
-        if (!response.ok || !response.body)
-          throw new Error(`Recording download failed (${response.status}).`);
-        const artifact = await objects.putStream(
-          `calls/${sid}/recordings/${recordingSid}.wav`,
-          Readable.fromWeb(
-            response.body as import("node:stream/web").ReadableStream,
-          ),
-          "audio/wav",
-        );
-        await calls.setArtifact(sid, "recording", artifact);
-        await deriveRecordings(sid, artifact, objects, calls).catch((error) =>
-          logEvent("recording.derivation_failed", { sid, ...errorDetail(error) }),
-        );
-        await calls.setRecordingUsage(
-          sid,
-          recordingSid,
-          Number(metadata.duration),
-        );
-        await db.collection("recording_requests").updateOne({ _id: sid as never }, { $set: { state: "completed" } });
+      const recordingJob = /^recording-(RE[a-f0-9]{32})(?:-repair-\d+)?$/i.exec(revision);
+      if (recordingJob) {
+        const recordingSid = recordingJob[1];
+        await recordings.process(sid, recordingSid);
         await artifacts.enqueue(sid, `recording-cost-${recordingSid}`, 1000);
         return;
       }
@@ -244,12 +206,27 @@ async function main(): Promise<void> {
     },
     { prefix: env.REDIS_PREFIX },
   );
+  recordings = new CallRecordings({
+    db, calls, objects, enabled: env.RECORDING_ENABLED,
+    credentials: async (call) => {
+      const auth = call.twilioAccountSid ? await credentials.forAccount(call.twilioAccountSid) : twilioSettings.current();
+      if (!auth) throw new Error("Original recording account credentials are unavailable.");
+      return auth;
+    },
+    enqueue: async (sid, recordingSid, retry) => {
+      const revision = `recording-${recordingSid}`;
+      if (retry && await artifacts.retryFailed(sid, revision)) return;
+      await artifacts.enqueue(sid, retry ? `${revision}-repair-${Date.now()}` : revision);
+    },
+  });
+  await recordings.initialize();
   await artifacts.ready();
   let dispatching = false;
   const dispatchPending = async () => {
     if (dispatching) return;
     dispatching = true;
     try {
+      await recordings.recover();
       for (const sid of await calls.pendingArchives()) {
         const call = await calls.get(sid);
         if (call)
@@ -280,31 +257,6 @@ async function main(): Promise<void> {
     const call = await calls.get(sid);
     if (call)
       await artifacts.enqueue(sid, `final-v${call.storageRevision ?? 0}`, 5000);
-  };
-  const startRecording = async (sid: string) => {
-    if (!env.RECORDING_ENABLED) return;
-    const requests = db.collection<{ _id: string; state: string }>(
-      "recording_requests",
-    );
-    const claim = await requests.updateOne(
-      { _id: sid },
-      { $setOnInsert: { state: "starting" } },
-      { upsert: true },
-    );
-    if (!claim.upsertedCount) return;
-    try {
-      await twilioClient(twilioSettings.current())
-        .calls(sid)
-        .recordings.create({
-          recordingChannels: "dual",
-          recordingStatusCallback: `${env.PUBLIC_BASE_URL}/twilio/recording-status`,
-          recordingStatusCallbackEvent: ["completed"],
-        });
-      await requests.updateOne({ _id: sid }, { $set: { state: "started" } });
-    } catch (error) {
-      await requests.updateOne({ _id: sid }, { $set: { state: "failed" } });
-      throw error;
-    }
   };
 
   const meetings = new MeetingService({
@@ -346,8 +298,7 @@ async function main(): Promise<void> {
       )
         await artifacts.enqueue(sid, `manual-${Date.now()}`);
     },
-    recordingReady: (sid, recordingSid) =>
-      artifacts.enqueue(sid, `recording-${recordingSid}`),
+    recordings,
   };
   startupStage = "HTTP listeners";
   const api = await createApiV1({
@@ -379,7 +330,6 @@ async function main(): Promise<void> {
     contexts,
     callState,
     maxConcurrentCalls: env.MAX_CONCURRENT_CALLS,
-    onStarted: (sid) => track(startRecording(sid)),
   });
   publicServer.listen(env.PORT, "127.0.0.1", () =>
     logEvent("server.public_listening", { port: env.PORT }),
@@ -414,12 +364,13 @@ async function main(): Promise<void> {
     }),
   );
   const workspaceBusy = async () => {
-    const [webhooksPending, queued, pending] = await Promise.all([
+    const [recordingPending, webhooksPending, queued, pending] = await Promise.all([
+      db.collection("recording_requests").findOne({ state: { $in: ["requested", "starting", "started", "processing"] } }),
       serverEvents.outbox.pending(),
       db.collection("call_requests").findOne({ phase: { $in: ["queued", "scheduled", "dialing"] } }),
       db.collection("calls").findOne({ $or: [{ storagePending: true }, { status: { $nin: ["completed", "failed"] } }] }),
     ]);
-    return webhooksPending || !!queued || !!pending || background.size > 0 || registry.activeCount > 0 || deps.pendingCalls > 0 || pool.size > 0 || meetings.list().some(m => !["ended", "failed", "needs-login"].includes(m.phase));
+    return !!recordingPending || webhooksPending || !!queued || !!pending || background.size > 0 || registry.activeCount > 0 || deps.pendingCalls > 0 || pool.size > 0 || meetings.list().some(m => !["ended", "failed", "needs-login"].includes(m.phase));
   };
   const activityTimer = setInterval(() => {
     void workspaceBusy().then(busy => process.send?.({ type: "activity", busy })).catch(() => {});

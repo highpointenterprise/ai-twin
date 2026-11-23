@@ -127,14 +127,14 @@ export class ObjectStore {
       throw error;
     }
   }
-  async signedUrl(key: string, expiresIn = 300): Promise<string> {
+  async signedUrl(key: string, expiresIn = 300, disposition: "inline" | "attachment" = "attachment"): Promise<string> {
     key = this.scopedKey(key);
     this.validateKey(key);
     if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 900)
       throw new Error("Download URLs must expire within 15 minutes.");
     return getSignedUrl(this.client, new GetObjectCommand({
       Bucket: this.options.bucket, Key: key,
-      ResponseContentDisposition: "attachment",
+      ResponseContentDisposition: disposition,
     }), { expiresIn });
   }
   async read(key: string): Promise<Readable> {

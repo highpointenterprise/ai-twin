@@ -259,8 +259,8 @@ export function AssistantSettings({
               />
             </label>
             <p className="hint">
-              Receives the End of Call Report as a JSON POST shortly after the
-              call ends. Final costs and recordings may still be processing.
+              Receives the End of Call Report as a JSON POST after the call
+              recording is processed. Billing may still be reconciling.
               Leave blank to disable. Use a public HTTPS endpoint.
             </p>
             {number(

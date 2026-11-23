@@ -61,7 +61,7 @@ const schema = z.object({
   CREDENTIAL_ENCRYPTION_KEY: z.string().default(""),
   RECORDING_ENABLED: z
     .enum(["true", "false"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true"),
   CALLS_PER_MINUTE: z.coerce.number().int().positive().default(60),
   DATA_DIR: z.string().default(".data"),
@@ -86,6 +86,8 @@ const schema = z.object({
   DISPATCH_POLL_MS: z.coerce.number().int().min(100).max(60000).default(1000),
   DIAL_PARALLELISM: z.coerce.number().int().min(1).max(100).default(10),
   CALL_START_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  WEBHOOK_RECORDING_WAIT_SECONDS: z.coerce.number().int().min(0).max(1800).default(600),
+  FFPROBE_PATH: z.string().default("ffprobe"),
   FFMPEG_PATH: z.string().default("ffmpeg"),
   RECORDING_CUSTOMER_CHANNEL: z.enum(["0", "1"]).default("0").transform(Number),
   MAX_CONCURRENT_MEETINGS: z.coerce.number().int().min(1).max(10).default(2),

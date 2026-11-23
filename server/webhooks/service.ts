@@ -1,3 +1,5 @@
+import { env } from "../../lib/env";
+import { recordingsComplete } from "../recordings/service";
 import type { Db } from "mongodb";
 import type { MongoCallRepository } from "../storage/calls";
 import type { ObjectStore } from "../storage/objects";
@@ -131,6 +133,14 @@ export class AssistantServerEvents {
     try {
       if (delivery.attempts > MAX_DELIVERY_ATTEMPTS)
         throw new DeliveryError("Webhook delivery attempts exhausted.", false);
+      const call = await this.deps.calls.get(delivery.callId);
+      const recording = await this.deps.db.collection("recording_requests").findOne({ _id: delivery.callId as never });
+      if (call?.endedAt && recording && !["absent", "failed"].includes(recording.state) &&
+          (recording.state !== "completed" || !recordingsComplete(call)) &&
+          Date.now() < Date.parse(call.endedAt) + env.WEBHOOK_RECORDING_WAIT_SECONDS * 1000) {
+        await this.outbox.defer(delivery, new Date(Date.now() + 5000));
+        return;
+      }
       const body = await this.deliveryBody(delivery);
       signal.throwIfAborted();
       const status = await (this.deps.send ?? postServerEvent)({
@@ -215,8 +225,9 @@ export class AssistantServerEvents {
               ReportArtifact,
               (typeof fields)[keyof typeof fields]
             >
-          ] = await this.deps.objects.signedUrl(stored.key, 900);
-        } catch {
+          ] = await this.deps.objects.signedUrl(stored.key, 900, "inline");
+        } catch (error) {
+          if (kind !== "logs") throw error;
           logEvent("webhook.artifact_url_unavailable", { sid: call.sid, kind });
         }
       }
@@ -225,6 +236,18 @@ export class AssistantServerEvents {
       artifact.presignedUrlsExpiresAt = new Date(
         Date.now() + 900_000,
       ).toISOString();
+    if (artifact.presignedStereoUrl) {
+      artifact.stereoRecordingUrl = artifact.presignedStereoUrl;
+      artifact.recording = { ...artifact.recording, stereoUrl: artifact.presignedStereoUrl };
+    }
+    if (artifact.presignedMonoUrl) {
+      artifact.recordingUrl = artifact.presignedMonoUrl;
+      artifact.recording = { ...artifact.recording, mono: {
+        combinedUrl: artifact.presignedMonoUrl,
+        ...(artifact.presignedAssistantUrl ? { assistantUrl: artifact.presignedAssistantUrl } : {}),
+        ...(artifact.presignedCustomerUrl ? { customerUrl: artifact.presignedCustomerUrl } : {}),
+      } };
+    }
     report.message.call.artifact = artifact;
     return JSON.stringify(report);
   }
