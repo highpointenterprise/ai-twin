@@ -5,7 +5,10 @@ import { resolve } from "node:path";
 export function workspaceIdentity(userId: string, base: NodeJS.ProcessEnv) {
   if (!/^[a-f0-9-]{36}$/i.test(userId)) throw new Error("Invalid workspace owner.");
   const namespace = createHash("sha256").update(`${base.MONGODB_DATABASE || "ai_twin"}:${userId}`).digest("hex").slice(0, 40);
-  return { userId, database: `workspace_${namespace}`, prefix: `workspace-${namespace}`, directory: resolve(base.DATA_DIR || ".data", "workspaces", userId) };
+  const database = base.WORKSPACE_DATABASE_FORMAT === "compact"
+    ? `ws_${Buffer.from(namespace, "hex").toString("base64url")}`
+    : `workspace_${namespace}`;
+  return { userId, database, prefix: `workspace-${namespace}`, directory: resolve(base.DATA_DIR || ".data", "workspaces", userId) };
 }
 
 export function workspaceEnvironment(userId: string, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

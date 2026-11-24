@@ -354,3 +354,18 @@ pre {
 .copy-value code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; user-select: all; min-width: 0; }
 .copy-value button { flex-shrink: 0; }
 .copy-value small { color: #a1a1aa; }
+
+.account-settings { max-width: 900px; display: grid; gap: 20px; }
+.account-settings .editor { padding: 24px; }
+.account-settings h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 12px; }
+.account-settings p { margin-bottom: 14px; overflow-wrap: anywhere; }
+.account-settings fieldset { display: grid; gap: 16px; margin-top: 16px; min-width: 0; }
+.account-settings fieldset button { justify-self: start; }
+.account-list { list-style: none; margin-top: 16px; padding: 0; }
+.account-list li { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border, #e4e4e7); }
+.account-list li > div { min-width: 0; }
+.account-list p, .account-list small, .account-list time { font-size: .8rem; }
+.account-list button { flex-shrink: 0; }
+.setup-key { display: block; padding: 16px; overflow-wrap: anywhere; background: #f4f4f5; color: #18181b; border-radius: 8px; user-select: all; }
+.recovery-codes { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 16px 0; user-select: all; }
+@media (max-width: 560px) { .account-settings .editor { padding: 16px; } .account-list li { flex-wrap: wrap; } }

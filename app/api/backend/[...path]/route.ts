@@ -1,3 +1,4 @@
+import { limitedBody } from "@/lib/request-body";
 import { backendFetch, sameOrigin } from "@/lib/backend";
 import { backendSessionToken } from "@/lib/session";
 
@@ -23,7 +24,7 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
         Authorization: `Bearer ${token}`,
         ...(request.headers.has("content-type") ? { "Content-Type": request.headers.get("content-type")! } : {}),
       },
-      ...(!["GET", "HEAD"].includes(request.method) ? { body: await request.arrayBuffer() } : {}),
+      ...(!["GET", "HEAD"].includes(request.method) ? { body: await limitedBody(request, 128 * 1024) } : {}),
     });
     const outgoing = new Headers({ "Cache-Control": "no-store" });
     for (const name of ["content-type", "content-disposition", "x-next-cursor", "retry-after"]) {
@@ -31,7 +32,8 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
       if (value) outgoing.set(name, value);
     }
     return new Response(response.body, { status: response.status, headers: outgoing });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "BodyTooLarge") return Response.json({ error: "Request body is too large." }, { status: 413 });
     if (path[0] === "numbers" && path[1] === "purchase")
       return Response.json({ error: "The purchase outcome is not yet confirmed. Refresh your numbers and check Twilio before buying again." }, { status: 503 });
     return Response.json({ error: "The server is temporarily unavailable. Please try again." }, { status: 503 });

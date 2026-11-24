@@ -5,6 +5,7 @@ import type { AgentConfig, PhoneNumberView } from "@/lib/types";
 import { AssistantsWorkspace } from "@/app/components/assistants/workspace";
 import { LogoutButton } from "@/app/components/logout-button";
 import { ToolEditor } from "@/app/components/tool-editor";
+import { AccountSettings } from "@/app/components/account-settings";
 import { ApiKeysPanel } from "@/app/components/api-keys-panel";
 import { CopyValue } from "@/app/components/copy-value";
 import { BillingPanel } from "@/app/components/billing-panel";
@@ -27,12 +28,14 @@ const sections = [
   "Usage & costs",
   "API keys",
   "Diagnostics",
+  "Account settings",
 ] as const;
 export default function Page({
   user,
 }: {
   user: { id: string; name: string; email: string };
 }) {
+  const [accountUser, setAccountUser] = useState(user);
   const leaveGuard = useRef<() => boolean>(() => true);
   const [loadVersion, setLoadVersion] = useState(0);
   const [section, setSection] =
@@ -119,8 +122,8 @@ export default function Page({
           <span aria-hidden="true">✦</span> AI Twin
         </div>
         <div className="workspace-account">
-          <strong>{user.name}</strong>
-          <span>{user.email}</span>
+          <strong>{accountUser.name}</strong>
+          <span>{accountUser.email}</span>
           <CopyValue label="Workspace / User ID" value={user.id} />
         </div>
         <p className="nav-caption">WORKSPACE</p>
@@ -193,7 +196,7 @@ export default function Page({
               </div>
             )}
             {section !== "Meetings" &&
-              section !== "Diagnostics" &&
+              section !== "Diagnostics" && section !== "Account settings" &&
               missing.length > 0 && (
                 <details className="setup">
                   <summary>
@@ -218,12 +221,13 @@ export default function Page({
                   </p>
                 </details>
               )}
-            {!loaded && !error && (
+            {!loaded && !error && section !== "Account settings" && (
               <div className="empty">Loading your workspace…</div>
             )}
             {section === "Meetings" && loaded && (
               <MeetingsPanel agents={agents} />
             )}
+            {section === "Account settings" && <AccountSettings onUser={setAccountUser} />}
             {section === "Diagnostics" && <DiagnosticsPanel />}
             {section === "Tools" &&
               (toolEdit ? (

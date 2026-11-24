@@ -1,3 +1,4 @@
+import { finishSignup } from "./auth-helpers";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -152,7 +153,7 @@ test(
     await page
       .getByRole("button", { name: "Create account", exact: true })
       .click();
-    await page.waitForURL(`${base}/dashboard`);
+    await finishSignup(page, base, fixture, "Phone test password!");
 
     await page.getByRole("button", { name: "Calls", exact: true }).click();
     const history = page.getByRole("table");

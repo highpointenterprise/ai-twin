@@ -32,7 +32,7 @@ const functionTool = z
       .object({
         name: functionName,
         description: z.string().trim().min(1).max(2000),
-        parameters: z.record(z.unknown()),
+        parameters: z.record(z.string(), z.unknown()),
       })
       .strict(),
     server: serverSchema,

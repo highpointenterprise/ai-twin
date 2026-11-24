@@ -2,7 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 
 export class BackendError extends Error {
-  constructor(readonly status: number, message: string, readonly retryAfter?: string) {
+  constructor(readonly status: number, message: string, readonly retryAfter?: string, readonly code?: string) {
     super(message);
   }
 }
@@ -41,11 +41,12 @@ export async function authRequest<T>(path: string, data: unknown): Promise<T> {
       "Content-Type": "application/json",
       "x-auth-client-secret": secret,
       "x-auth-client-ip": clientIp,
+      "x-auth-client-agent": (incoming.get("user-agent") || "").slice(0, 200),
     },
     body: JSON.stringify(data),
   });
   const body = await response.json();
-  if (!response.ok) throw new BackendError(response.status, body.error || "Authentication failed.", response.headers.get("retry-after") ?? undefined);
+  if (!response.ok) throw new BackendError(response.status, body.error || "Authentication failed.", response.headers.get("retry-after") ?? undefined, body.code);
   return body as T;
 }
 

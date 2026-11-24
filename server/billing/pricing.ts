@@ -43,8 +43,8 @@ export const defaultRates: Rates = {
 const rate = z.number().finite().nonnegative();
 const modelRatesSchema = z.object({ input: rate, cachedInput: rate, output: rate, audioInput: rate.optional(), audioCachedInput: rate.optional(), audioOutput: rate.optional() }).strict();
 export const ratesSchema = z.object({
-  api: z.record(rate).optional(), elevenlabsCreditUsd: rate.optional(), elevenlabsCreditsPerCharacter: z.record(rate).optional(),
-  deepgram: z.record(rate), elevenlabs: z.record(rate), openai: z.record(modelRatesSchema), models: z.record(modelRatesSchema).optional(),
+  api: z.record(z.string(), rate).optional(), elevenlabsCreditUsd: rate.optional(), elevenlabsCreditsPerCharacter: z.record(z.string(), rate).optional(),
+  deepgram: z.record(z.string(), rate), elevenlabs: z.record(z.string(), rate), openai: z.record(z.string(), modelRatesSchema), models: z.record(z.string(), modelRatesSchema).optional(),
   twilio: z.object({ inboundLocalPerMin: rate, inboundTollFreePerMin: rate, outboundPerMin: rate, mediaStreamsPerMin: rate, amdPerCall: rate, recordingPerMin: rate.optional(), conferencePerParticipantMin: rate.optional() }).strict(),
 }).strict();
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

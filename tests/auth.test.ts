@@ -31,7 +31,7 @@ test("authentication API with durable MongoDB sessions", { skip: !process.env.TE
   let session: AuthSession;
 
   await t.test("dashboard endpoints reject missing and forged sessions before returning data", async () => {
-    for (const path of ["/api/agents", "/api/health", "/api/settings/twilio", "/api/calls", "/api/v1/auth/session"]) {
+    for (const path of ["/api/agents", "/api/health", "/api/settings/twilio", "/api/calls", "/api/v1/auth/session", "/api/v1/auth/account"]) {
       const response = await fetch(url + path);
       assert.equal(response.status, 401);
       assert.equal(response.headers.get("cache-control"), "no-store");
@@ -47,19 +47,25 @@ test("authentication API with durable MongoDB sessions", { skip: !process.env.TE
     assert.equal((await post("signup", { ...input, name: " " })).status, 400);
     assert.equal((await post("signup", { ...input, email: { $ne: null } })).status, 400);
     const response = await post("signup", input);
-    assert.equal(response.status, 201);
-    const { user } = await response.json();
-    assert.equal(user.email, "user@example.com");
-    assert.deepEqual(Object.keys(user).sort(), ["email", "id", "name"]);
-    const stored = await db.collection("users").findOne({ email: user.email });
+    assert.equal(response.status, 202);
+    assert.deepEqual(Object.keys(await response.json()), ["message"]);
+    const stored = await db.collection("users").findOne({ email: "user@example.com" });
+    assert.equal((await post("login", input)).status, 403);
     assert.match(stored!.passwordHash, /^scrypt\$/);
     assert.equal(JSON.stringify(stored).includes(input.password), false);
   });
 
   await t.test("duplicate emails including case variants are rejected atomically", async () => {
-    assert.equal((await post("signup", { ...input, email: " user@example.com " })).status, 409);
+    assert.equal((await post("signup", { ...input, email: " user@example.com " })).status, 202);
     const attempts = await Promise.all([post("signup", { ...input, email: "race@example.com" }), post("signup", { ...input, email: "RACE@example.com" })]);
-    assert.deepEqual(attempts.map((r) => r.status).sort(), [201, 409]);
+    assert.deepEqual(attempts.map((r) => r.status).sort(), [202, 202]);
+  });
+
+  await t.test("verification links are required and single use", async () => {
+    const message = fixture.mail.filter(m => m.email === "user@example.com").at(-1)!;
+    const attempts = await Promise.all([post("verify-email", { token: message.token }), post("verify-email", { token: message.token })]);
+    assert.deepEqual(attempts.map(r => r.status).sort(), [200, 400]);
+    assert.equal(await db.collection("users").countDocuments({ email: "race@example.com" }), 1);
   });
 
   await t.test("login returns generic errors and an opaque session for correct credentials", async () => {
