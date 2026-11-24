@@ -67,7 +67,7 @@ export const screeningSchema = z
 export const assistantSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
-    server: assistantServerSchema.default({}),
+    server: assistantServerSchema.prefault({}),
     systemPrompt: z.string().trim().min(1).max(16000),
     firstMessage: z
       .string()
@@ -86,12 +86,12 @@ export const assistantSchema = z
     realtimeVoice: z.string().default("marin"),
     model: z.string().trim().min(1).max(128).default("gpt-4.1"),
     temperature: z.number().min(0).max(1.2).default(0.7),
-    transcriber: transcriberSchema.default({}),
-    voice: voiceSchema.default({}),
-    startSpeakingPlan: startSpeakingSchema.default({}),
-    stopSpeakingPlan: stopSpeakingSchema.default({}),
-    voicemailDetection: voicemailSchema.default({}),
-    callScreening: screeningSchema.default({}),
+    transcriber: transcriberSchema.prefault({}),
+    voice: voiceSchema.prefault({}),
+    startSpeakingPlan: startSpeakingSchema.prefault({}),
+    stopSpeakingPlan: stopSpeakingSchema.prefault({}),
+    voicemailDetection: voicemailSchema.prefault({}),
+    callScreening: screeningSchema.prefault({}),
     toolIds: z.array(z.string().uuid()).max(30).default([]),
     silenceTimeoutSeconds: z.number().min(10).max(600).default(60),
     maxDurationSeconds: z.number().int().min(30).max(7200).default(1800),
@@ -174,7 +174,7 @@ export const toolSchema = z
       ...toolBase,
       type: z.literal("transferCall"),
       transferMode: z.enum(["blind", "warm"]).default("blind"),
-      warmTransfer: warmTransferSchema.default({}),
+      warmTransfer: warmTransferSchema.prefault({}),
       routingMode: z.enum(["description", "phrase"]).default("description"),
       destinations: z.array(destinationSchema).min(1).max(20),
       timeoutSeconds: z.number().int().min(5).max(120).default(30),
@@ -188,7 +188,7 @@ export const toolSchema = z
     z.object({
       ...toolBase,
       type: z.literal("function"),
-      parameters: z.record(z.unknown()),
+      parameters: z.record(z.string(), z.unknown()),
       server: z.object({
         url: z
           .string()

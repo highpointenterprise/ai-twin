@@ -32,7 +32,7 @@ export const hostingSchema = z
       .object({ gbMonthUsd: amount, retentionDays: amount.max(3650) })
       .strict()
       .optional(),
-    overheadPerMinute: z.record(amount).optional(),
+    overheadPerMinute: z.record(z.string(), amount).optional(),
   })
   .strict()
   .refine(

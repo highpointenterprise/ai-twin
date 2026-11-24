@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, scryptSync } from "node:crypto";
 import { authFixture } from "./auth-fixture";
 import { digest, seal, totp, totpStep, unseal } from "../server/auth/crypto";
 import { AuthMailQueue } from "../server/auth/mail";
 import { ApiKeyStore } from "../server/api/v1/auth/api-keys";
 import { ApiKeyDirectory } from "../server/api/v1/auth/key-directory";
 import type { AuthSession } from "../lib/auth";
+import { verifyPassword } from "../server/auth/password";
 import { limitedBody } from "../lib/request-body";
 
 test("TOTP matches RFC vectors and authenticated encryption rejects tampering", () => {
@@ -18,6 +19,14 @@ test("TOTP matches RFC vectors and authenticated encryption rejects tampering", 
   assert.throws(() => unseal(blob, key, "user2"));
   const altered = Buffer.from(blob, "base64url"); altered[20] ^= 1;
   assert.throws(() => unseal(altered.toString("base64url"), key, "user1"));
+});
+
+test("legacy password hashes remain usable during the stronger hash migration", async () => {
+  const password = "Legacy account password", salt = randomBytes(16);
+  const key = scryptSync(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  const hash = `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+  assert.equal(await verifyPassword(password, hash), true);
+  assert.equal(await verifyPassword("wrong password", hash), false);
 });
 
 test("request size limits apply to streamed bodies without a content-length", async () => {

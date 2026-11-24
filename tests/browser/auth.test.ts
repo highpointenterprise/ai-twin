@@ -1,3 +1,4 @@
+import { totp } from "../../server/auth/crypto";
 import { finishSignup } from "./auth-helpers";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -59,7 +60,7 @@ test("login and signup across a separate Next.js frontend and Mongo-backed API",
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const email = "browser@example.com";
-  const password = "Browser test password!";
+  let password = "Browser test password!";
 
   await t.test("dashboard, gateway, and legacy API paths cannot bypass authentication", async () => {
     await page.goto(`${base}/dashboard`);
@@ -147,6 +148,63 @@ test("login and signup across a separate Next.js frontend and Mongo-backed API",
     } catch (error) {
       throw new Error(`Login error state: ${await page.locator("body").innerText()}\n${logs}`, { cause: error });
     }
+  });
+
+  await t.test("account settings, password recovery and authenticator enrollment work end to end", async () => {
+    const login = async (code = "") => {
+      await page.getByLabel("Email address").fill(email);
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByLabel("Authenticator or recovery code (if enabled)").fill(code);
+      await page.getByRole("button", { name: "Log in", exact: true }).click();
+    };
+    const settings = async () => {
+      await page.waitForURL(`${base}/dashboard`);
+      await page.getByRole("button", { name: "Account settings", exact: true }).click();
+      await page.getByRole("heading", { name: "Active sessions", exact: true }).waitFor();
+    };
+    await login(); await settings();
+    const profile = page.locator("section").filter({ has: page.getByRole("heading", { name: "Profile", exact: true }) });
+    await profile.getByLabel("Full name").fill("Updated browser user");
+    await profile.getByRole("button", { name: "Save profile" }).click();
+    await page.getByRole("status").filter({ hasText: "Profile saved." }).waitFor();
+    assert.equal(await page.locator(".workspace-account strong").textContent(), "Updated browser user");
+    await page.screenshot({ path: "/tmp/account-settings-mobile.png", fullPage: true });
+    assert.equal((await context.request.patch(`${base}/api/account/profile`, { data: { name: "Forged" }, headers: { origin: "https://foreign.example" } })).status(), 403);
+    const accountResponse = await context.request.get(`${base}/api/account`);
+    assert.ok(accountResponse.headers()["content-security-policy"].includes("script-src"));
+    assert.equal(accountResponse.headers()["cache-control"], "no-store");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    await page.goto(`${base}/forgot-password`);
+    await page.getByLabel("Email address").fill(email);
+    await page.getByRole("button", { name: "Send email" }).click();
+    await page.getByRole("status").waitFor();
+    const reset = fixture.mail.at(-1)!; assert.equal(reset.action, "reset");
+    await page.goto(`${base}/reset-password#token=${reset.token}`);
+    password = "Changed browser password!";
+    await page.getByLabel("New password", { exact: true }).fill(password);
+    await page.getByLabel("Confirm new password").fill(password);
+    await page.getByRole("button", { name: "Reset password", exact: true }).click();
+    await page.getByRole("status").waitFor();
+    assert.equal(new URL(page.url()).hash, "");
+    assert.equal((await context.request.get(`${base}/api/backend/agents`)).status(), 401);
+    await page.getByRole("link", { name: "Back to login" }).click();
+    await login(); await settings();
+    const mfa = page.locator("section").filter({ has: page.getByRole("heading", { name: "Two-factor authentication", exact: true }) });
+    await mfa.getByLabel("Current password").fill(password);
+    await mfa.getByRole("button", { name: "Set up authenticator" }).click();
+    const key = mfa.locator(".setup-key"); await key.waitFor();
+    await mfa.getByLabel("Six-digit authenticator code").fill(totp((await key.innerText()).trim()));
+    await mfa.getByRole("button", { name: "Enable two-factor authentication", exact: true }).click();
+    await page.getByRole("heading", { name: "Save your recovery codes" }).waitFor();
+    const codes = await page.locator(".recovery-codes code").allTextContents(); assert.equal(codes.length, 10);
+    await page.getByRole("button", { name: "I saved my codes — sign in again" }).click();
+    await page.waitForURL(`${base}/login`); await login();
+    await page.getByRole("alert").filter({ hasText: "Enter your authenticator or recovery code." }).waitFor();
+    await login(codes[0]); await settings();
+    await mfa.getByLabel("Current password").fill(password);
+    await mfa.getByLabel("Authenticator or recovery code", { exact: true }).fill(codes[1]);
+    await mfa.getByRole("button", { name: "Disable two-factor authentication" }).click();
+    await page.waitForURL(`${base}/login`);
   });
 
   await t.test("login restores access and expired backend sessions return to login", async () => {
