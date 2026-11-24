@@ -1,3 +1,4 @@
+import { finishSignup } from "./auth-helpers";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -83,7 +84,7 @@ test("login and signup across a separate Next.js frontend and Mongo-backed API",
     await page.getByLabel("Confirm password").fill(password);
     await page.getByRole("button", { name: "Create account", exact: true }).click();
     try {
-      await page.waitForURL(`${base}/dashboard`);
+      await finishSignup(page, base, fixture, password);
       await page.getByRole("button", { name: "Log out", exact: true }).waitFor();
     } catch (error) {
       throw new Error(`Signup did not reach the dashboard: ${page.url()}\n${await page.locator("body").innerText()}\nBrowser errors: ${errors.join("; ")}\n${logs}`, { cause: error });
@@ -136,9 +137,7 @@ test("login and signup across a separate Next.js frontend and Mongo-backed API",
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByLabel("Confirm password").fill(password);
     await page.getByRole("button", { name: "Create account", exact: true }).click();
-    await page.getByRole("alert").filter({ hasText: "already exists" }).waitFor();
-    await page.getByRole("link", { name: "Log in", exact: true }).click();
-    await page.waitForURL(`${base}/login`);
+    await page.waitForURL(`${base}/login?registered=1`);
     await page.getByRole("heading", { name: "Welcome back" }).waitFor();
     await page.getByLabel("Email address").fill(email);
     await page.getByLabel("Password", { exact: true }).fill("An incorrect password");

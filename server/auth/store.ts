@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { MongoServerError, type Collection, type Db, type Filter } from "mongodb";
 import { SESSION_IDLE_MS, SESSION_MAX_AGE, type AuthSession, type AuthUser } from "../../lib/auth";
-import { hashPassword, verifyPassword } from "./password";
+import { hashPassword, passwordNeedsUpgrade, verifyPassword } from "./password";
 import { digest, newTotpSecret, opaqueToken, seal, totpStep, unseal } from "./crypto";
 type Action = "verify" | "reset" | "email";
 interface Link { hash: string; expiresAt: Date; email?: string }
@@ -58,6 +58,9 @@ export class AuthStore {
     if (!u || !valid || u.disabledAt) { if (u) await this.audit(u._id, "login.failed"); return null; }
     if (!u.emailVerifiedAt) throw new AuthError(403, "Verify your email before signing in.", "EmailNotVerified");
     try { await this.secondFactor(u, code); } catch (e) { await this.audit(u._id, "login.mfa_failed"); throw e; }
+    if (passwordNeedsUpgrade(u.passwordHash)) {
+      await this.users.updateOne({ ...versionFilter(u), passwordHash: u.passwordHash }, { $set: { passwordHash: await hashPassword(password) } });
+    }
     const token = opaqueToken(), now = new Date(), expiresAt = new Date(now.getTime() + SESSION_MAX_AGE * 1000);
     await this.sessions.insertOne({ _id: digest(token), id: randomUUID(), userId: u._id, authVersion: u.authVersion || 0, expiresAt, createdAt: now, lastSeenAt: now, userAgent: userAgent.slice(0, 200) });
     const excess = await this.sessions.find({ userId: u._id }).sort({ createdAt: -1 }).skip(20).project<{ _id: string }>({ _id: 1 }).toArray();

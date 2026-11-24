@@ -7,27 +7,31 @@ export const validApiKey = (token: string) =>
 export class ApiKeyDirectory {
   constructor(private readonly db: Db) {}
   private get keys() {
-    return this.db.collection<{ _id: string; userId: string; keyId: string }>(
+    return this.db.collection<{ _id: string; userId: string; keyId: string; authVersion?: number }>(
       "api_key_directory",
     );
   }
-  async register(hash: string, userId: string, keyId: string) {
+  async register(hash: string, userId: string, keyId: string, authVersion = 0) {
     await this.keys.updateOne(
       { _id: hash, userId },
-      { $setOnInsert: { userId, keyId } },
+      { $setOnInsert: { userId, keyId, authVersion } },
       { upsert: true },
     );
   }
   async remove(hash: string, userId: string) {
     await this.keys.deleteOne({ _id: hash, userId });
   }
+  async version(userId: string) {
+    const user = await this.db.collection<{ _id: string; authVersion?: number }>("users").findOne({ _id: userId });
+    return user?.authVersion || 0;
+  }
   async owner(token: string): Promise<string | undefined> {
     if (!validApiKey(token)) return;
     const record = await this.keys.findOne({ _id: apiKeyDigest(token) });
     if (!record) return;
     const user = await this.db
-      .collection<{ _id: string }>("users")
-      .findOne({ _id: record.userId }, { projection: { _id: 1 } });
-    return user?._id;
+      .collection<{ _id: string; authVersion?: number }>("users")
+      .findOne({ _id: record.userId, emailVerifiedAt: { $type: "date" }, disabledAt: { $exists: false } } as import("mongodb").Filter<{ _id: string; authVersion?: number }>);
+    return user && (user.authVersion || 0) === (record.authVersion || 0) ? user._id : undefined;
   }
 }

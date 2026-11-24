@@ -1,4 +1,6 @@
 import express from "express";
+import { env } from "../../lib/env";
+import type { MailQueue } from "../auth/mail";
 import type { ApiKeyDirectory } from "../api/v1/auth/key-directory";
 import { bearerToken } from "../api/v1/auth/api-keys";
 import { ApiError, apiErrorHandler, asyncRoute } from "../api/v1/http/errors";
@@ -25,11 +27,12 @@ function proxy(req: IncomingMessage, res: ServerResponse, port: number, path: st
   req.pipe(upstream);
 }
 
-export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: WorkspaceResolver, directory?: ApiKeyDirectory) {
+export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: WorkspaceResolver, directory?: ApiKeyDirectory, mail?: MailQueue) {
   const admin = express();
+  admin.set("trust proxy", env.TRUST_PROXY_HOPS);
   admin.disable("x-powered-by");
   admin.get("/health", (_req, res) => res.json({ status: "ok" }));
-  admin.use("/api/v1/auth", createAuthRouter(auth, secret));
+  admin.use("/api/v1/auth", createAuthRouter(auth, secret, mail));
   admin.use(requireUser(auth));
   admin.use(async (req, res) => {
     try {
@@ -40,6 +43,7 @@ export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: Wo
     }
   });
   const publicApp = express();
+  publicApp.set("trust proxy", env.TRUST_PROXY_HOPS);
   publicApp.disable("x-powered-by");
   publicApp.get("/health", (_req, res) => res.json({ status: "ok" }));
   const apiPaths = ["/call", "/assistant", "/phone-number", "/v2/phone-number", "/tool"];

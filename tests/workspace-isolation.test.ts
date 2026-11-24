@@ -60,6 +60,7 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   };
   const auth = new AuthStore(db); await auth.initialize();
   const users = await Promise.all(["a", "b"].map(name => auth.signup({ name, email: `${name}@example.com`, password: "test-password-long" })));
+  await db.collection("users").updateMany({}, { $set: { emailVerifiedAt: new Date() } });
   const sessions = await Promise.all(users.map(u => auth.login(u.email, "test-password-long")));
   await db.collection("assistants").insertOne({ id: "legacy-assistant", orgId: "default", name: "Private legacy data" });
   const meetingId = randomUUID();
@@ -133,7 +134,7 @@ test("two real workspace workers reject cross-account resource IDs and keep lega
   assert.deepEqual(await (await req(1, "/api/meetings")).json(), []);
   for (const path of ["", "/trace"]) assert.equal((await req(1, `/api/meetings/${meetingId}${path}`)).status, 404);
   assert.equal((await req(1, `/api/meetings/${meetingId}/end`, "POST", {})).status, 404);
-  const keys = new ApiKeyStore(client.db(aIdentity.database), users[0].id); await keys.initialize();
+  const keys = new ApiKeyStore(client.db(aIdentity.database), users[0].id, new ApiKeyDirectory(db)); await keys.initialize();
   const key = await keys.issue("A only");
   assert.equal((await fetch(`${publicUrl}/workspaces/${users[0].id}/assistant`, { headers: { Authorization: `Bearer ${key.key}` } })).status, 200);
   assert.equal((await fetch(`${publicUrl}/workspaces/${users[1].id}/assistant`, { headers: { Authorization: `Bearer ${key.key}` } })).status, 401);
