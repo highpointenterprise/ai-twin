@@ -39,7 +39,7 @@ export function AuthForm({ mode, registered = false }: { mode: "login" | "signup
       const result = await signIn("credentials", {
         email: input.data.email,
         password: input.data.password,
-        code: fields.get("code") || undefined,
+        code: fields.get("code") || "",
         redirect: false,
         callbackUrl: "/dashboard",
       });
