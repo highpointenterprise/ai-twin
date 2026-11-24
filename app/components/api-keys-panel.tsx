@@ -10,6 +10,7 @@ type Key = {
   createdAt: string;
   lastUsedAt?: string;
   revokedAt?: string;
+  invalidated?: boolean;
 };
 type KeyList = {
   keys: Key[];
@@ -68,7 +69,7 @@ function KeyRow({
           Save name
         </button>
         <span>
-          Ending in …{item.hint} · {item.revokedAt ? "Revoked" : "Active"}
+          Ending in …{item.hint} · {item.revokedAt ? "Revoked" : item.invalidated ? "Invalidated by account security change" : "Active"}
         </span>
       </form>
       <small>

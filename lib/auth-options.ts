@@ -13,6 +13,7 @@ export const authOptions: NextAuthOptions = {
       name: "Email and password",
       credentials: {
         email: { label: "Email", type: "email" },
+        code: { label: "Security code", type: "text" },
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
@@ -22,6 +23,7 @@ export const authOptions: NextAuthOptions = {
           const session = await authRequest<AuthSession>("login", parsed.data);
           return { ...session.user, backendToken: session.token, backendExpiresAt: session.expiresAt };
         } catch (error) {
+          if (error instanceof BackendError && error.code && ["EmailNotVerified", "MfaRequired", "MfaInvalid"].includes(error.code)) throw new Error(error.code);
           if (error instanceof BackendError && error.status === 401) return null;
           if (error instanceof BackendError && error.status === 429) throw new Error("RateLimited");
           throw new Error("ServiceUnavailable");

@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { MongoClient } from "mongodb";
 import { env } from "../lib/env";
 import { ApiKeyDirectory } from "./api/v1/auth/key-directory";
+import { AuthMailQueue } from "./auth/mail";
 import { AuthStore } from "./auth/store";
 import { credentialKey } from "./storage/credentials";
 import { WorkspacePool } from "./workspaces/pool";
@@ -14,10 +15,16 @@ async function main() {
   credentialKey(env.CREDENTIAL_ENCRYPTION_KEY);
   const mongo = await new MongoClient(env.MONGODB_URI).connect();
   const db = mongo.db(env.MONGODB_DATABASE);
-  const auth = new AuthStore(db);
+  const auth = new AuthStore(db, env.CREDENTIAL_ENCRYPTION_KEY);
   await auth.initialize();
+  const mail = new AuthMailQueue(db, { from: env.AUTH_EMAIL_FROM, appUrl: env.AUTH_APP_URL, region: env.AUTH_EMAIL_REGION, encryptionKey: env.CREDENTIAL_ENCRYPTION_KEY });
+  await mail.initialize();
+  const deliverMail = () => { void mail.drain().catch(() => console.error("auth.mail_queue_failed")); };
+  const mailTimer = setInterval(deliverMail, 5000);
+  mailTimer.unref();
+  deliverMail();
   const pool = new WorkspacePool(db, { ...process.env, MONGODB_DATABASE: env.MONGODB_DATABASE }, env.MAX_WORKSPACE_WORKERS);
-  const apps = createWorkspaceGateway(auth, env.AUTH_API_SECRET, pool, new ApiKeyDirectory(db));
+  const apps = createWorkspaceGateway(auth, env.AUTH_API_SECRET, pool, new ApiKeyDirectory(db), mail);
   const publicServer = createServer(apps.publicApp);
   attachWorkspaceMedia(publicServer, pool);
   publicServer.listen(env.PORT);
@@ -54,9 +61,11 @@ async function main() {
     if (closing) return;
     closing = true;
     clearInterval(recoveryTimer);
+    clearInterval(mailTimer);
     publicServer.close();
     admin.close();
     await pool.close();
+    await mail.close();
     await mongo.close();
   }
   process.once("SIGTERM", () => void close());

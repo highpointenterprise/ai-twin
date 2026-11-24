@@ -26,6 +26,7 @@ interface ApiKeyDocument {
   hint: string;
   createdAt: string;
   revokedAt?: string;
+  authVersion?: number;
   lastUsedAt?: string;
 }
 
@@ -51,13 +52,15 @@ export class ApiKeyStore {
         orgId: this.orgId,
         revokedAt: { $exists: false },
       }))
-        await this.directory.register(key.hash, this.orgId, key._id);
+        await this.directory.register(key.hash, this.orgId, key._id, key.authVersion || 0);
   }
 
   async issue(name: string): Promise<{ id: string; key: string }> {
     const key = `${KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
     const id = randomUUID();
+    const authVersion = await this.directory?.version(this.orgId) || 0;
     await this.keys.insertOne({
+      authVersion,
       _id: id,
       orgId: this.orgId,
       name: name.slice(0, 80),
@@ -66,7 +69,7 @@ export class ApiKeyStore {
       createdAt: new Date().toISOString(),
     });
     try {
-      await this.directory?.register(digest(key), this.orgId, id);
+      await this.directory?.register(digest(key), this.orgId, id, authVersion);
     } catch (error) {
       await this.keys.deleteOne({ _id: id, orgId: this.orgId });
       throw error;
@@ -75,6 +78,7 @@ export class ApiKeyStore {
   }
 
   async list(after?: string) {
+    const authVersion = await this.directory?.version(this.orgId) || 0;
     const rows = await this.keys
       .find(
         { orgId: this.orgId, ...(after ? { _id: { $gt: after } } : {}) },
@@ -88,6 +92,7 @@ export class ApiKeyStore {
         .slice(0, 100)
         .map(({ _id, orgId: _orgId, hash: _hash, ...key }) => ({
           id: _id,
+          invalidated: (key.authVersion || 0) !== authVersion,
           ...key,
         })),
       nextCursor: rows.length > 100 ? rows[99]._id : null,
@@ -113,6 +118,7 @@ export class ApiKeyStore {
   }
   async verify(token: string): Promise<Principal | undefined> {
     if (!validApiKey(token)) return undefined;
+    if (this.directory && await this.directory.owner(token) !== this.orgId) return undefined;
     const document = await this.keys.findOne({
       hash: digest(token),
       orgId: this.orgId,

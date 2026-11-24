@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { env } from "../../lib/env";
 import type { ChatMessage, LanguageModel, ToolCall } from "../core/ports";
-import { providerAgent } from "./network";
+import "./network";
 import { resolveModel, type ModelRoute } from "./model-routing";
 const isReasoningModel = (model: string): boolean => /^(gpt-5|o\d)/.test(model);
 const sampling = (
@@ -46,7 +46,6 @@ export const createOpenAiModel = (
     const created = makeClient({
       apiKey: route.endpoint.apiKey(),
       baseURL: route.endpoint.baseURL,
-      httpAgent: providerAgent(),
       maxRetries: 0,
       timeout: 30000,
     });

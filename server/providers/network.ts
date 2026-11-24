@@ -1,7 +1,7 @@
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 // Keep the managed environment's proxy and CA trust; never disable TLS checks.
-if (process.env.HTTPS_PROXY || process.env.HTTP_PROXY)
+if (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy)
   setGlobalDispatcher(new EnvHttpProxyAgent());
 
 let cached: { proxy: string; agent: HttpsProxyAgent<string> } | undefined;

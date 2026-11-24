@@ -43,6 +43,7 @@ test(
         }),
       ),
     );
+    await db.collection("users").updateMany({}, { $set: { emailVerifiedAt: new Date() } });
     const sessions = await Promise.all(
       owners.map((u) => auth.login(u.email, "test password long")),
     );

@@ -87,14 +87,14 @@ export const assistantBodySchema = z
     maxDurationSeconds: z.number().int().min(30).max(7200).optional(),
     startSpeakingPlan: startSpeakingPlanSchema.optional(),
     stopSpeakingPlan: stopSpeakingPlanSchema.optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 
 export type AssistantBody = z.infer<typeof assistantBodySchema>;
 
 export const assistantOverridesSchema = assistantBodySchema
-  .extend({ variableValues: z.record(z.unknown()).optional() })
+  .extend({ variableValues: z.record(z.string(), z.unknown()).optional() })
   .strict();
 export type AssistantOverrides = z.infer<typeof assistantOverridesSchema>;
 
