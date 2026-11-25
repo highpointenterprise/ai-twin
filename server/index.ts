@@ -17,7 +17,7 @@ async function main() {
   const db = mongo.db(env.MONGODB_DATABASE);
   const auth = new AuthStore(db, env.CREDENTIAL_ENCRYPTION_KEY);
   await auth.initialize();
-  const mail = new AuthMailQueue(db, { from: env.AUTH_EMAIL_FROM, appUrl: env.AUTH_APP_URL, region: env.AUTH_EMAIL_REGION, encryptionKey: env.CREDENTIAL_ENCRYPTION_KEY });
+  const mail = new AuthMailQueue(db, { from: env.AUTH_EMAIL_FROM, appUrl: env.NEXTAUTH_URL || env.AUTH_APP_URL, region: env.AUTH_EMAIL_REGION, encryptionKey: env.CREDENTIAL_ENCRYPTION_KEY });
   await mail.initialize();
   const deliverMail = () => { void mail.drain().catch(() => console.error("auth.mail_queue_failed")); };
   const mailTimer = setInterval(deliverMail, 5000);
