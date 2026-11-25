@@ -44,13 +44,14 @@ import type { AgentRepository } from "../store/agents";
 import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
 import type { ToolRepository } from "../tools/registry";
-import { voicemailAction } from "../calls/voicemail";
+
 import {
   environmentTwilioCredentials,
   twilioConnectionStatus,
   type TwilioSettings,
 } from "../providers/twilio-settings";
 export interface HttpDeps {
+  openings?: import("../speech/preparation").OpeningPreparation;
   store: AgentRepository;
   registry: CallRegistry;
   telephony: Telephony;
@@ -552,6 +553,7 @@ export const createAdminApp = (
           publicBaseUrl: env.PUBLIC_BASE_URL,
           firstMessageMode: agent.firstMessageMode,
         });
+        d.openings?.start(callId, agent);
         const sid = await telephony.placeCall({
           to: input.to,
           from,
@@ -559,6 +561,7 @@ export const createAdminApp = (
           statusUrl: `${env.PUBLIC_BASE_URL}/twilio/status?callId=${callId}`,
           voicemail: agent.voicemailDetection,
         });
+        d.openings?.bind(callId, sid, traces.for(sid));
         await contexts.bindAsync(callId, sid);
         const record =
           registry.get(sid) ??
@@ -577,6 +580,7 @@ export const createAdminApp = (
         await traces.flush();
         return res.status(201).json(record);
       } catch (e) {
+        d.openings?.cancel(callId);
         await d.callState?.release(callId);
         await contexts.deleteAsync(callId);
         throw e;
@@ -902,6 +906,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
         !(await d.callState.reserve(callId, env.MAX_CONCURRENT_CALLS, 600000))
       )
         throw new HttpError(503, "Concurrent call limit reached.");
+      d.openings?.start(callId, agent);
+      d.openings?.bind(callId, b.CallSid, traces.for(b.CallSid));
       const attachedTools = await tools.resolve(agent.toolIds);
       await contexts.setAsync(callId, {
         agent,
@@ -964,28 +970,10 @@ export const createPublicApp = (d: HttpDeps): Express => {
           status: "connected",
           requestId: context.requestId,
         });
-      registry.patch(b.CallSid, { answeredBy: b.AnsweredBy });
-      const action = voicemailAction(
-        b.AnsweredBy,
-        context.agent.voicemailDetection,
-      );
-      traces.for(b.CallSid).log("answer.detected", {
-        answeredBy: b.AnsweredBy || "not-detected",
-        action,
-      });
+      d.openings?.start(q.callId, context.agent);
+      d.openings?.bind(q.callId, b.CallSid, traces.for(b.CallSid));
+      traces.for(b.CallSid).log("answer.connected", { detection: "builtin" });
       res.type("text/xml");
-      if (action === "hangup") {
-        await contexts.deleteAsync(q.callId);
-        registry.patch(b.CallSid, {
-          endedReason: b.AnsweredBy.startsWith("machine")
-            ? "voicemail"
-            : "answer-detection-ended",
-        });
-        await registry.flush();
-        await traces.flush();
-        return res.send(await recordResponse(b.CallSid, "<Response><Hangup/></Response>"));
-      }
-      await contexts.updatePurposeAsync(q.callId, action);
       await registry.flush();
       await traces.flush();
       return res.send(await stream(q.agentId, q.callId));

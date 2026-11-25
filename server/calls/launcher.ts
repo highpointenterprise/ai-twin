@@ -8,6 +8,7 @@ import type { CallRegistry } from "../store/calls";
 import type { ContextStore } from "../store/contexts";
 
 export interface LauncherDependencies {
+  openings?: import("../speech/preparation").OpeningPreparation;
   telephony: Telephony;
   contexts: ContextStore;
   registry: CallRegistry;
@@ -38,6 +39,7 @@ export class CallLauncher {
         agentId: request.agent.id,
         token: signStreamToken(request.agent.id, callId),
       });
+      this.deps.openings?.start(callId, request.agent);
       const sid = await telephony.placeCall({
         to: request.customer.number,
         from: request.from,
@@ -45,6 +47,7 @@ export class CallLauncher {
         statusUrl: `${env.PUBLIC_BASE_URL}/twilio/status?callId=${callId}`,
         voicemail: request.agent.voicemailDetection,
       });
+      this.deps.openings?.bind(callId, sid, traces.for(sid));
       await contexts.bindAsync(callId, sid);
       if (!registry.get(sid))
         registry.create({
@@ -64,6 +67,7 @@ export class CallLauncher {
       await calls.attachRequest(sid, callId);
       return sid;
     } catch (error) {
+      this.deps.openings?.cancel(callId);
       await contexts.deleteAsync(callId);
       throw error;
     }

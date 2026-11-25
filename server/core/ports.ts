@@ -83,6 +83,7 @@ export interface ConversationSnapshot {
   deadline: number;
 }
 export interface ToolContext {
+  sendDtmf?: (keys: string, durationMs: number, gapMs: number) => Promise<void>;
   usage?: UsageMeter;
   snapshot?: ConversationSnapshot;
   callSid: string;
@@ -211,6 +212,8 @@ export interface ConversationSession {
 }
 
 export interface SessionInit {
+  preparedOpening?: import("../speech/preparation").PreparedOpening;
+  sendDtmf?: (keys: string, durationMs: number, gapMs: number, signal: AbortSignal) => Promise<void>;
   callSid: string;
   purpose?: "conversation" | "voicemail" | "warm-consultation" | "meeting";
   inputAudioFormat?: AudioFormat;
