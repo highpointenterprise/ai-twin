@@ -115,6 +115,9 @@ export class OpeningPreparation {
       return entry.audio.usable ? entry.audio : undefined;
     }
   }
+  cancelCall(sid: string): void {
+    for (const [id, entry] of this.pending) if (entry.sid === sid) this.cancel(id);
+  }
   cancel(callId: string): void {
     const entry = this.pending.get(callId);
     if (!entry) return;

@@ -218,7 +218,7 @@ test(
           .fill("stop\nplease wait");
         await page
           .getByLabel(
-            "Enable Twilio answering-machine detection for outbound calls",
+            "Enable built-in voicemail detection for outbound calls",
           )
           .check();
         await page
@@ -227,6 +227,9 @@ test(
         await page
           .getByLabel("Voicemail message", { exact: true })
           .fill("Please call support back.");
+        await page.getByLabel("Voicemail evidence threshold").fill("0.92");
+        await page.getByLabel("Maximum beep wait (seconds)").fill("12");
+        await page.getByLabel("Menu quiet period (ms)").fill("900");
         await page
           .getByLabel("Respond to automated name-and-purpose screening")
           .check();
@@ -278,6 +281,10 @@ test(
           saved.callScreening.response,
           "This is the support team following up.",
         );
+        assert.equal(saved.voicemailDetection.provider, "builtin");
+        assert.equal(saved.voicemailDetection.confidenceThreshold, 0.92);
+        assert.equal(saved.voicemailDetection.beepWaitSeconds, 12);
+        assert.equal(saved.callHandling.menuSilenceMs, 900);
         assert.equal(saved.silenceTimeoutSeconds, 45);
       },
     );

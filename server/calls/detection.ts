@@ -28,7 +28,7 @@ export function classifyAnswer(text: string, screening = false): Decision {
   if (mailbox || message && (tone || unavailable) && !quoted)
     return { kind: "voicemail", confidence: 0.98, evidence: mailbox ? "mailbox-announcement" : "message-invitation-and-greeting" };
   if (message && !quoted && !/\b(?:would you|could you|can you|did you)\b/i.test(value))
-    return { kind: "voicemail", confidence: 0.88, evidence: "message-invitation" };
+    return { kind: "voicemail", confidence: 0.78, evidence: "message-invitation" };
   if (holdCue.test(value)) return { kind: "unknown", confidence: 0.8, evidence: "connection-hold" };
   if (tone || unavailable || /\b(?:thank you for calling|you have reached|welcome to|automated|recorded message)\b/i.test(value))
     return { kind: "unknown", confidence: 0.65, evidence: "incomplete-automated-greeting" };
@@ -50,15 +50,16 @@ export class CallHandling {
   private menuFinalAt?: number;
   private lastVoiceAt = -Infinity;
   private speaking = false;
+  private dtmfInFlight = false;
   private lastUnknown = "";
   private lastBeepAt = -Infinity;
   private lastDecision = "";
 
-  constructor(private readonly agent: AgentConfig, private readonly trace: ProviderTrace, private readonly outbound: boolean, private readonly hasDtmf: boolean, now = Date.now()) {
+  constructor(private readonly agent: AgentConfig, private readonly trace: ProviderTrace, private readonly outbound: boolean, private readonly hasDtmf: boolean, now = Date.now(), private readonly enabled = true) {
     this.started = this.stateSince = now;
   }
   get automated(): boolean { return !["unknown", "human"].includes(this.state); }
-  get canSpeculate(): boolean { return this.state === "human" || !this.outbound && !this.automated; }
+  get canSpeculate(): boolean { return !this.enabled || this.state === "human" || !this.outbound && !this.automated; }
   get awaitingBeep(): boolean { return this.state === "voicemail"; }
   speechStart(now = Date.now()): void { this.speaking = true; this.lastVoiceAt = now; this.menuFinalAt = undefined; }
   audio(voiced: boolean, now = Date.now()): void { if (voiced) this.lastVoiceAt = now; }
@@ -69,6 +70,7 @@ export class CallHandling {
     return { action: "leave-message" };
   }
   observe(text: string, final: boolean, now = Date.now()): HandlingResult {
+    if (!this.enabled) return { action: final ? "conversation" : "none" };
     if (this.state === "ended") return { action: "wait" };
     if (final) this.speaking = false;
     let decision = classifyAnswer(text, this.screeningEncountered && this.state.startsWith("screening"));
@@ -107,13 +109,14 @@ export class CallHandling {
       return { action: "wait" };
     }
     if (decision.kind === "human" && final) {
-      if (this.automated && decision.confidence < 0.9) return { action: "wait" };
+      if (this.automated && decision.confidence < 0.9) return { action: this.state === "voicemail-speaking" ? "none" : "wait" };
       this.initialResolved = true;
       this.transition("human", decision, now);
       this.menuFinalAt = undefined;
       return { action: "conversation" };
     }
     if ((decision.kind === "unknown" || decision.kind === "voicemail" && this.agent.voicemailDetection.enabled || decision.kind === "screening" && this.agent.callScreening.enabled || decision.kind === "ivr") && this.outbound) {
+      if (this.state === "voicemail-speaking") return { action: "none" };
       if (final) this.lastUnknown = text;
       if (this.state === "human" && decision.evidence !== "connection-hold") return { action: final ? "conversation" : "none" };
       return { action: "wait" };
@@ -121,6 +124,7 @@ export class CallHandling {
     return { action: final && !this.automated ? "conversation" : "none" };
   }
   tick(now = Date.now()): HandlingResult {
+    if (!this.enabled) return { action: "none" };
     if (this.hasDtmf && this.state === "ivr" && this.menuFinalAt !== undefined && !this.speaking && now - Math.max(this.lastVoiceAt, this.menuFinalAt) >= this.agent.callHandling.menuSilenceMs) {
       this.menuFinalAt = undefined;
       return { action: "menu", text: this.menuText };
@@ -133,7 +137,7 @@ export class CallHandling {
       return this.finish("voicemail-beep-timeout", now);
     }
     if (this.state.startsWith("screening") && now - this.stateSince >= this.agent.callScreening.waitSeconds * 1000) return this.finish("screening-timeout", now);
-    if (this.state.startsWith("ivr") && now - this.stateSince >= this.agent.callHandling.ivrWaitSeconds * 1000) return this.finish("ivr-timeout", now);
+    if (this.state.startsWith("ivr") && !this.dtmfInFlight && now - this.stateSince >= this.agent.callHandling.ivrWaitSeconds * 1000) return this.finish("ivr-timeout", now);
     if (this.outbound && !this.initialResolved && now - this.started >= this.agent.voicemailDetection.detectionTimeoutSeconds * 1000) {
       this.initialResolved = true;
       if (this.agent.voicemailDetection.enabled && this.agent.voicemailDetection.unknownAction === "hangup") return this.finish("answer-detection-ended", now);
@@ -150,10 +154,16 @@ export class CallHandling {
     const repeats = this.menus.get(key) ?? 0;
     if (this.selections >= this.agent.callHandling.maxMenuSelections || repeats >= this.agent.callHandling.maxRepeatedMenuSelections) return "IVR selection limit reached.";
     this.menuPrefix = "";
+    this.dtmfInFlight = true;
     this.selections++;
     this.menus.set(key, repeats + 1);
     this.transition("ivr-wait", { kind: "ivr", confidence: 1, evidence: "keypad-selection-sent" }, now);
     return undefined;
+  }
+  dtmfCompleted(now = Date.now()): void {
+    if (!this.dtmfInFlight) return;
+    this.dtmfInFlight = false;
+    if (this.state === "ivr-wait") this.stateSince = now;
   }
   close(): void { this.state = "ended"; }
   private finish(reason: string, now: number): HandlingResult {

@@ -1,4 +1,4 @@
-import { assistantSchema } from "../../lib/config";
+import { callHandlingSchema, screeningSchema, voicemailSchema } from "../../lib/config";
 import { randomUUID } from "node:crypto";
 import type {
   ChatMessage,
@@ -56,7 +56,7 @@ export class StandardSession implements ConversationSession {
     private readonly init: SessionInit,
     private readonly deps: EngineDeps,
   ) {
-    init = { ...init, agent: { ...init.agent, ...assistantSchema.parse(init.agent) } };
+    init = { ...init, agent: { ...init.agent, callHandling: callHandlingSchema.parse(init.agent.callHandling ?? {}), callScreening: screeningSchema.parse(init.agent.callScreening ?? {}), voicemailDetection: voicemailSchema.parse(init.agent.voicemailDetection ?? {}) } };
     this.init = init;
     init.trace.log("session.initializing", {
       agentId: init.agent.id,
@@ -72,7 +72,7 @@ export class StandardSession implements ConversationSession {
     this.deadline =
       init.deadline ?? Date.now() + init.agent.maxDurationSeconds * 1000;
     this.output = new SpeechOutput(init, deps.synthesize);
-    this.handling = new CallHandling(init.agent, init.trace, init.direction === "outbound", (init.tools ?? []).some((tool) => tool.type === "dtmf"));
+    this.handling = new CallHandling(init.agent, init.trace, init.direction === "outbound", (init.tools ?? []).some((tool) => tool.type === "dtmf"), Date.now(), !init.purpose || init.purpose === "conversation");
     this.beep = new BeepDetector(init.inputAudioFormat);
     this.handlingTimer = setInterval(() => this.handleDecision(this.handling.tick()), 100);
     this.handlingTimer.unref();
@@ -98,6 +98,7 @@ export class StandardSession implements ConversationSession {
             if (
               this.turn &&
               !this.speculating &&
+              !this.handling.automated &&
               shouldInterrupt(text, init.agent.stopSpeakingPlan)
             )
               this.interrupt();
@@ -105,6 +106,7 @@ export class StandardSession implements ConversationSession {
           onEagerEnd: (text) => this.maybeSpeculate(text),
           onResume: () => {
             init.trace.log("stt.turn_resumed");
+            if (this.handling.state === "voicemail-speaking") return;
             if (this.speculating) this.cancelSpeculation();
             else if (this.turn) this.interrupt();
           },
@@ -184,6 +186,7 @@ export class StandardSession implements ConversationSession {
     if (
       this.turn &&
       !this.speculating &&
+      this.handling.state !== "voicemail-speaking" &&
       this.init.agent.stopSpeakingPlan.numWords === 0 &&
       this.voicedMs >= this.init.agent.stopSpeakingPlan.voiceSeconds * 1000
     )
@@ -300,6 +303,7 @@ export class StandardSession implements ConversationSession {
     }
     // A final transcript can itself be a backchannel; don't cancel ongoing audio for it.
     if (
+      !wasAutomated &&
       !this.speculating &&
       this.output.active &&
       !shouldInterrupt(text, this.init.agent.stopSpeakingPlan)
@@ -339,7 +343,6 @@ export class StandardSession implements ConversationSession {
     ) {
       this.speculation = undefined;
       this.init.trace.say("caller", text);
-
       this.history.push({ role: "user", content: text });
       this.init.trace.log("speculation.adopted");
       speculation.gate.commit();
@@ -369,11 +372,13 @@ export class StandardSession implements ConversationSession {
       return;
     }
     if (decision.action === "screen") {
+      this.menuPending = false;
       this.run(async (signal) => {
         if (text) this.history.push({ role: "user", content: text });
         await this.speak(this.init.agent.callScreening.response, signal, true);
       }, true);
     } else if (decision.action === "leave-message") {
+      this.menuPending = false;
       this.run(async (signal) => {
         await this.speak(this.init.agent.voicemailDetection.message, signal, true);
         signal.throwIfAborted();
@@ -411,6 +416,10 @@ export class StandardSession implements ConversationSession {
           return;
         }
         this.init.trace.log("turn.failed", errorDetail(error));
+        if (this.handling.automated) {
+          if (this.handling.state === "voicemail-speaking") await this.end("speech-provider-error");
+          return;
+        }
         if (this.init.purpose === "warm-consultation") {
           await this.end("consultation-provider-error");
           return;
@@ -555,7 +564,7 @@ export class StandardSession implements ConversationSession {
       const gate = round === 0 && turnGate ? turnGate : TurnGate.open();
 
       const hasDtmf = tools.some((t) => t.type === "dtmf");
-      const ivrTurn = allowTools && hasDtmf && this.handling.state === "ivr";
+      const ivrTurn = allowTools && hasDtmf && this.handling.state.startsWith("ivr");
       const ivrRule = hasDtmf
         ? "\n" +
           IVR_RULES +
@@ -582,6 +591,7 @@ export class StandardSession implements ConversationSession {
       const streaming = !buffered && !ivrTurn;
       const segmenter = new SpeechSegmenter();
       const stream = this.output.open(signal, {
+        preconnect: !ivrTurn,
         gate,
         floorMs: agent.startSpeakingPlan.waitSeconds * 1000,
         onFirstAudio: (at) => this.markFirstAudio(at),
@@ -716,12 +726,13 @@ export class StandardSession implements ConversationSession {
         if (denied) {
           this.init.trace.log("ivr.selection_blocked", { reason: denied });
           if (denied === "IVR selection limit reached.") await this.end("ivr-navigation-limit");
+          this.history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify({ error: denied }) });
           return { waitForUser: true };
         }
         this.init.trace.log("dtmf.sending", { transport: this.init.sendDtmf ? "out-of-band" : "in-band" });
       }
       if (this.executed.has(call.id))
-        outcome = { result: this.executed.get(call.id) };
+        outcome = { result: this.executed.get(call.id), ...(tool.type === "dtmf" ? { waitForUser: true } : {}) };
       else {
         this.init.trace.log("tool.started", {
           tool: tool.name,
@@ -755,6 +766,7 @@ export class StandardSession implements ConversationSession {
       });
     } catch (error) {
       outcome = {
+        ...(tool?.type === "dtmf" ? { waitForUser: true } : {}),
         result: {
           error: signal.aborted
             ? "Interrupted; the operation may already have reached the remote service. Do not retry automatically."
@@ -768,6 +780,7 @@ export class StandardSession implements ConversationSession {
         toolCallId: call.id,
       });
     }
+    if (tool?.type === "dtmf") this.handling.dtmfCompleted();
     this.history.push({
       role: "tool",
       toolCallId: call.id,

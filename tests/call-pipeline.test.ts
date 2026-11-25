@@ -1,3 +1,4 @@
+import { OpeningPreparation } from "../server/speech/preparation";
 import type { CallRecordings } from "../server/recordings/service";
 import { createTestAdminApp as createAdminApp } from "./admin-helper";
 import { test } from "node:test";
@@ -76,6 +77,19 @@ for (const direction of ["inbound", "outbound"] as const)
         );
       }),
     );
+    let openingRequests = 0;
+    const synthesize = elevenLabsSynthesizerFactory((url) => {
+            assert.match(url, /server-voice/);
+            assert.equal(
+              new URL(url).searchParams.get("output_format"),
+              "ulaw_8000",
+            );
+            return new WebSocket(
+              `ws://127.0.0.1:${(el.address() as AddressInfo).port}`,
+            );
+          });
+    const openings = new OpeningPreparation((...args) => { openingRequests++; return synthesize(...args); });
+    t.after(() => openings.close());
     const d: Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } = {
       store: new AgentStore(
         agent({
@@ -85,6 +99,7 @@ for (const direction of ["inbound", "outbound"] as const)
           startSpeakingPlan: { waitSeconds: 0.05 },
         }),
       ),
+      openings,
       registry: new CallRegistry(),
       contexts: new ContextStore(),
       tools: new ToolRegistry(),
@@ -109,6 +124,7 @@ for (const direction of ["inbound", "outbound"] as const)
         { sid: "PN-test", phoneNumber: "+14155550100", label: "Test" },
       ],
       placeCall: async (request) => {
+        assert.equal(openingRequests, 1, "Opening preparation starts before dialing");
         outboundUrl = request.url;
         return sid;
       },
@@ -119,23 +135,14 @@ for (const direction of ["inbound", "outbound"] as const)
     const media = attachMediaServer(publicServer, {
       ...d,
       factory: (init) =>
-        new StandardSession(init, {
+        new StandardSession({ ...init, preparedOpening: openings.take(init.callSid) }, {
           transcribe: deepgramTranscriberFactory((url) => {
             assert.equal(new URL(url).searchParams.get("encoding"), "mulaw");
             return new WebSocket(
               `ws://127.0.0.1:${(dg.address() as AddressInfo).port}`,
             );
           }),
-          synthesize: elevenLabsSynthesizerFactory((url) => {
-            assert.match(url, /server-voice/);
-            assert.equal(
-              new URL(url).searchParams.get("output_format"),
-              "ulaw_8000",
-            );
-            return new WebSocket(
-              `ws://127.0.0.1:${(el.address() as AddressInfo).port}`,
-            );
-          }),
+          synthesize,
           model: {
             async *stream() {
               yield { type: "text", text: "We are open until five." };
@@ -206,6 +213,7 @@ for (const direction of ["inbound", "outbound"] as const)
       ),
     );
     assert.ok(params.token);
+    await until(() => voices === 1);
     const socket = new WebSocket(publicUrl.replace("http:", "ws:") + "/media"),
       packets: Record<string, any>[] = [];
     socket.on("message", (raw) => {

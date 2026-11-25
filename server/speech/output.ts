@@ -16,6 +16,7 @@ const DEFAULT_CHARS_PER_MS = 0.0145;
 const PLAYOUT_LAG_MS = 120;
 
 export interface SpeechStreamOptions {
+  preconnect?: boolean;
   gate?: TurnGate;
   floorMs?: number;
   cacheKey?: string;
@@ -66,6 +67,8 @@ export class SpeechStream {
       cached: !!this.cacheHit,
     });
     signal.addEventListener("abort", this.onAbort, { once: true });
+    if (options.preconnect && !this.cacheHit && !options.prepared?.usable)
+      this.synth = this.createSynthesizer();
   }
 
   get text(): string {

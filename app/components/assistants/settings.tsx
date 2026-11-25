@@ -456,7 +456,7 @@ export function AssistantSettings({
                   <label>When no beep is detected
                     <select aria-label="When no beep is detected" value={a.voicemailDetection.beepTimeoutAction} onChange={(e) => set("voicemailDetection", { ...a.voicemailDetection, beepTimeoutAction: e.target.value as "hangup" | "leave-message" })}>
                       <option value="hangup">Hang up without leaving a message</option>
-                      <option value="leave-message">Leave a message after speech stops</option>
+                      <option value="leave-message">Leave if input is quiet; otherwise hang up</option>
                     </select>
                   </label>
                 </>}

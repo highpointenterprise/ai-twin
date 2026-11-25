@@ -811,8 +811,8 @@ export const createPublicApp = (d: HttpDeps): Express => {
       return recordingTwiml(twiml, `${env.PUBLIC_BASE_URL}/twilio/recording-status`);
     return twiml;
   };
-  const stream = async (agentId: string, callId: string) => {
-    const sid = (await contexts.getAsync(callId))?.sid;
+  const stream = async (agentId: string, callId: string, knownSid?: string) => {
+    const sid = knownSid ?? (await contexts.getAsync(callId))?.sid;
     if (sid) {
       traces.for(sid).log("media.awaiting_connection", {
         callId,
@@ -853,7 +853,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
       res.type("text/xml");
       const existingId = await contexts.idForSidAsync(b.CallSid);
       if (agent && existingId)
-        return res.send(await stream(agent.id, existingId));
+        return res.send(await stream(agent.id, existingId, b.CallSid));
       const missing = missingConfiguration(d);
       const reason = !agent
         ? "no-agent-assigned"
@@ -927,9 +927,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
         to: b.To,
         status: "connected",
       });
-      await registry.flush();
-      await traces.flush();
-      return res.send(await stream(agent.id, callId));
+      return res.send(await stream(agent.id, callId, b.CallSid));
     }),
   );
   app.post(
@@ -974,9 +972,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
       d.openings?.bind(q.callId, b.CallSid, traces.for(b.CallSid));
       traces.for(b.CallSid).log("answer.connected", { detection: "builtin" });
       res.type("text/xml");
-      await registry.flush();
-      await traces.flush();
-      return res.send(await stream(q.agentId, q.callId));
+      return res.send(await stream(q.agentId, q.callId, b.CallSid));
     }),
   );
   app.post(
@@ -1043,6 +1039,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
             : "",
       });
       if (status === "completed" || status === "failed") {
+        d.openings?.cancelCall(b.CallSid);
         if (typeof req.query.callId === "string")
           await d.callState?.release(req.query.callId);
         if (status === "completed") {
