@@ -37,7 +37,7 @@ test("diagnostic logs redact secrets, rotate, persist through restart and filter
   t.after(() => {
     env.ELEVENLABS_API_KEY = old;
   });
-  const log = new DiagnosticLog(path, 800);
+  const log = new DiagnosticLog(path, 800, 0);
   for (let i = 0; i < 15; i++)
     log.append({
       at: i,

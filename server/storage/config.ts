@@ -76,13 +76,13 @@ export class MongoAgentStore implements AgentRepository {
 
   async find(id: string): Promise<AgentConfig | undefined> {
     const document = await this.assistants.findOne({ orgId: this.orgId, id });
-    return document ? publicFields(document) : undefined;
+    return document ? { ...publicFields(document), ...assistantSchema.parse(document) } : undefined;
   }
 
   async list(page: ConfigPage = {}): Promise<AgentConfig[]> {
     const documents = await this.assistants.find({ orgId: this.orgId, ...(page.after ? { id: { $gt: page.after } } : {}) })
       .sort({ id: 1 }).limit(configPageLimit(page)).toArray();
-    return documents.map(publicFields);
+    return documents.map((document) => ({ ...publicFields(document), ...assistantSchema.parse(document) }));
   }
 
   async usesTool(toolId: string): Promise<boolean> {

@@ -98,7 +98,7 @@ test("configuration API works without provider credentials and refuses live call
   });
   assert.equal(bad.status, 400);
 });
-test("Twilio callbacks reject invalid signatures and map voicemail without a human conversation", async (t) => {
+test("Twilio callbacks reject invalid signatures and ignore legacy AMD results", async (t) => {
   env.PUBLIC_BASE_URL = "https://calls.example.com";
   env.STREAM_SECRET = "test-only-signing-secret-never-for-production";
   env.TWILIO_AUTH_TOKEN = "test-only-webhook-token";
@@ -147,8 +147,8 @@ test("Twilio callbacks reject invalid signatures and map voicemail without a hum
   });
   assert.equal(response.status, 200);
   assert.match(await response.text(), /Stream/);
-  assert.equal(d.contexts.get("test-context")?.purpose, "voicemail");
-  assert.equal(d.registry.get("CA-test")?.answeredBy, "machine_end_beep");
+  assert.equal(d.contexts.get("test-context")?.purpose, "conversation");
+  assert.equal(d.registry.get("CA-test")?.answeredBy, undefined);
 });
 test("tool deletion refuses attached tools and callback terminal states do not regress", async (t) => {
   const d = deps();

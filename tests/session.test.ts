@@ -276,7 +276,8 @@ test("interrupted tool completes its protocol record before the next user turn",
     {
       model: {
         async *stream(r) {
-          requests.push(structuredClone(r));
+          const { trace: _trace, ...request } = r;
+          requests.push(structuredClone(request));
           rounds++;
           if (rounds === 1)
             yield {

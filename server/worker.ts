@@ -1,3 +1,4 @@
+import { OpeningPreparation } from "./speech/preparation";
 import "dotenv/config";
 import { PhoneNumbers } from "./phone-numbers/service";
 import { NumberRepository } from "./phone-numbers/repository";
@@ -145,6 +146,7 @@ async function main(): Promise<void> {
     onCallEnded: (sid) => finalizeCall(sid),
   });
   const executor = new ToolExecutor(telephony, fetch, warmTransfers);
+  const openings = new OpeningPreparation(createElevenLabsSynthesizer, env.MAX_CONCURRENT_CALLS);
   const engine: EngineDeps = {
     transcribe: createDeepgramTranscriber,
     synthesize: createElevenLabsSynthesizer,
@@ -268,6 +270,7 @@ async function main(): Promise<void> {
     traces: new TraceStore(),
   });
   const deps: HttpDeps = {
+    openings,
     store,
     registry,
     tools,
@@ -301,6 +304,7 @@ async function main(): Promise<void> {
   };
   startupStage = "HTTP listeners";
   const api = await createApiV1({
+    openings,
     orgId: env.WORKSPACE_USER_ID,
     authDb: mongo.db(env.AUTH_DATABASE || env.MONGODB_DATABASE),
     db,
@@ -321,7 +325,7 @@ async function main(): Promise<void> {
     factory: (init) =>
       init.purpose === "warm-consultation"
         ? createConsultationSession(init, engine, warmTransfers)
-        : new StandardSession(init, engine),
+        : new StandardSession({ ...init, preparedOpening: openings.take(init.callSid) }, engine),
     onResumed: (id, sid) => warmTransfers.resumed(id, sid),
     pool,
     registry,
@@ -401,6 +405,7 @@ async function main(): Promise<void> {
       const adminClosed = closeHttp(admin);
       await meetings.shutdown();
       warmTransfers.shutdown();
+      openings.close();
       pool.closeAll();
       for (const client of media.clients) client.terminate();
       const mediaClosed = new Promise<void>((resolve, reject) => {

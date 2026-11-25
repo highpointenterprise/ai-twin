@@ -61,9 +61,9 @@ export class ToolExecutor {
     if (tool.type === "dtmf") {
       if (typeof args.keys !== "string")
         throw new Error("DTMF keys are required.");
-      await context.playAudio(
-        dtmfAudio(args.keys, tool.toneDurationMs, tool.gapMs),
-      );
+      const audio = dtmfAudio(args.keys, tool.toneDurationMs, tool.gapMs);
+      if (context.sendDtmf) await context.sendDtmf(args.keys, tool.toneDurationMs, tool.gapMs);
+      else await context.playAudio(audio);
       return {
         waitForUser: true,
         result: { status: "tones-played", keys: args.keys },
