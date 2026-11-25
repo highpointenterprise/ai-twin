@@ -46,7 +46,7 @@ export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: Wo
   publicApp.set("trust proxy", env.TRUST_PROXY_HOPS);
   publicApp.disable("x-powered-by");
   publicApp.get("/health", (_req, res) => res.json({ status: "ok" }));
-  const apiPaths = ["/call", "/assistant", "/phone-number", "/v2/phone-number", "/tool"];
+  const apiPaths = ["/create-call", "/call", "/assistant", "/phone-number", "/v2/phone-number", "/tool"];
   publicApp.use(apiPaths, requestContext, asyncRoute(async (req, res) => {
     const token = bearerToken(req.get("authorization"));
     const owner = token ? await directory?.owner(token) : undefined;

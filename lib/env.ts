@@ -42,6 +42,7 @@ const schema = z.object({
   WORKSPACE_DATABASE_FORMAT: z.enum(["legacy", "compact"]).default("legacy"),
   ADMIN_HOST: z.string().default("127.0.0.1"),
   AUTH_APP_URL: z.string().default(""),
+  NEXTAUTH_URL: z.string().default(""),
   AUTH_EMAIL_FROM: z.string().default(""),
   AUTH_EMAIL_REGION: z.string().default("us-east-2"),
   AUTH_API_SECRET: z.string().default(""),

@@ -5,6 +5,7 @@ export const E164_PATTERN = /^\+[1-9]\d{6,14}$/;
 export { assistantSchema as agentInputSchema } from "../../lib/config";
 
 export const callRequestSchema = z.object({
+  variables: z.record(z.string().max(128), z.union([z.string().max(16000), z.number().finite(), z.boolean(), z.null()])).optional(),
   agentId: z.string().uuid(),
   to: z.string().regex(E164_PATTERN, "Use E.164 format, like +14155550123."),
   from: z.string().regex(E164_PATTERN).optional(),

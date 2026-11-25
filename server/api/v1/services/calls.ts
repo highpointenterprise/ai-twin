@@ -1,3 +1,5 @@
+import { renderCallAgent, normalizeVariables } from "../../../calls/variables";
+import type { SimpleCallBody } from "../schemas/create-call";
 import { createHash, randomUUID } from "node:crypto";
 import type { Document, Filter } from "mongodb";
 import { env } from "../../../../lib/env";
@@ -45,31 +47,8 @@ export const ARTIFACT_ROUTES = {
 } as const satisfies Record<string, ArtifactKind>;
 export type ArtifactRoute = keyof typeof ARTIFACT_ROUTES;
 
-const PLACEHOLDER = /\{\{\s*([A-Za-z0-9_.&]+)\s*\}\}/g;
 const BATCH_PARALLELISM = 10;
 const SIGNED_URL_SECONDS = 300;
-
-const render = (value: unknown): string =>
-  typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
-
-const substitute = (text: string, variables: Readonly<Record<string, unknown>>): string =>
-  text.replace(PLACEHOLDER, (match, name: string) =>
-    Object.hasOwn(variables, name) && variables[name] !== undefined ? render(variables[name]) : match,
-  );
-
-const withVariables = (body: AssistantBody, variables: Readonly<Record<string, unknown>>): AssistantBody => ({
-  ...body,
-  ...(body.firstMessage ? { firstMessage: substitute(body.firstMessage, variables) } : {}),
-  ...(body.voicemailMessage ? { voicemailMessage: substitute(body.voicemailMessage, variables) } : {}),
-  ...(body.model?.messages
-    ? {
-        model: {
-          ...body.model,
-          messages: body.model.messages.map((entry) => ({ ...entry, content: substitute(entry.content, variables) })),
-        },
-      }
-    : {}),
-});
 
 const builtinVariables = (customer: CustomerBody): Record<string, unknown> => {
   const now = new Date();
@@ -110,6 +89,20 @@ export class CallService {
     if (readiness.state === "updating")
       throw conflict("Twilio credentials are being updated. Try again when the connection finishes.");
     if (readiness.state === "misconfigured") throw new ApiError(503, `Live calling is not configured: ${readiness.message}`);
+  }
+
+  async createSimple(body: SimpleCallBody, key?: string): Promise<Record<string, unknown>> {
+    if (body.clientId !== this.deps.orgId) throw new ApiError(403, "clientId does not match the authenticated workspace.");
+    const { clientId, agentId, fromNumber, toNumber, customData, ...custom } = body;
+    const variables = normalizeVariables({ ...custom, ...customData, clientId, agentId, fromNumber, toNumber });
+    const number = fromNumber ? (await this.deps.phoneNumbers.byNumbers([fromNumber])).get(fromNumber) : undefined;
+    if (fromNumber && !number) throw badRequest("fromNumber: phone number not found in your workspace");
+    const name = variables.full_name;
+    const { createCallSchema } = await import("../schemas/call");
+    return this.create(createCallSchema.parse({ assistantId: agentId, phoneNumberId: number?.id,
+      customer: { number: toNumber, ...(name ? { name } : {}), email: variables.email, externalId: variables.contactId },
+      assistantOverrides: { variableValues: variables },
+    }), key);
   }
 
   async create(body: CreateCallBody, idempotencyKey?: string): Promise<Record<string, unknown>> {
@@ -166,11 +159,10 @@ export class CallService {
     const overrides = mergeAssistant(callOverrides, customerOverrides);
     const variableValues = { ...(body.assistantOverrides?.variableValues ?? {}), ...(customer.assistantOverrides?.variableValues ?? {}) };
     const merged = Object.keys(overrides).length ? mergeAssistant(base.body, overrides) : base.body;
-    const rendered = withVariables(merged, { ...builtinVariables(customer), ...(variableValues ?? {}) });
-    const agent: AgentConfig = effectiveAssistant({ ...toAgentInput(rendered), id: base.assistantId ?? id });
+    const origin = await this.resolveOrigin(body.phoneNumberId, base.assistantId);
+    const agent: AgentConfig = renderCallAgent(effectiveAssistant({ ...toAgentInput(merged), id: base.assistantId ?? id }), { ...builtinVariables(customer), email: customer.email, contactId: customer.externalId, toNumber: customer.number, ...variableValues, fromNumber: origin.number, callId: id });
     if (!agent.voiceId) throw new ApiError(503, "Live calling is not configured: Assistant voice ID");
     const tools = await this.resolveTools(agent.toolIds);
-    const origin = await this.resolveOrigin(body.phoneNumberId, base.assistantId);
     const now = Date.now();
     const earliest = body.schedulePlan ? Date.parse(body.schedulePlan.earliestAt) : now;
     const scheduled = earliest > now + 1000;

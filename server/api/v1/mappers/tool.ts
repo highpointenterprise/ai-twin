@@ -20,6 +20,7 @@ export const toToolInput = (body: ToolBody): ToolInput => {
     case "dtmf":
       return toolSchema.parse({
         type: "dtmf",
+        navigation: body.navigation, toneDurationMs: body.toneDurationMs, gapMs: body.gapMs,
         name: body.function?.name ?? "dtmf",
         description: body.function?.description ?? "Press keypad digits on an automated phone menu.",
       });
@@ -61,7 +62,7 @@ export const toApiToolBody = (tool: ToolConfig): ToolBody => {
         server: tool.server,
       };
     case "dtmf":
-      return { type: "dtmf", function: { name: tool.name, description: tool.description } };
+      return { type: "dtmf", navigation: tool.navigation, toneDurationMs: tool.toneDurationMs, gapMs: tool.gapMs, function: { name: tool.name, description: tool.description } };
     case "transferCall":
       return {
         type: "transferCall",

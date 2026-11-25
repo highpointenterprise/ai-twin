@@ -1,3 +1,4 @@
+import { simpleCallRoutes } from "./create-call";
 import { Router } from "express";
 import { authenticate, type ApiKeyStore } from "../auth/api-keys";
 import { apiErrorHandler, notFound } from "../http/errors";
@@ -21,10 +22,11 @@ export interface ApiRouterDependencies {
 
 export const createApiRouter = (deps: ApiRouterDependencies): Router => {
   const router = Router();
-  const prefixes = ["/assistant", "/call", "/phone-number", "/v2/phone-number", "/tool"];
+  const prefixes = ["/create-call", "/assistant", "/call", "/phone-number", "/v2/phone-number", "/tool"];
   const phone = phoneNumberRoutes(deps.phoneNumbers);
   router.use(prefixes, requestContext, authenticate(deps.keys, deps.callState), requireJson, jsonBody);
   router.use("/assistant", assistantRoutes(deps.assistants));
+  router.use("/create-call", simpleCallRoutes(deps.calls));
   router.use("/call", callRoutes(deps.calls));
   router.use("/phone-number", phone.v1);
   router.use("/v2/phone-number", phone.v2);

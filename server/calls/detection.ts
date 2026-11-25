@@ -3,11 +3,7 @@ import type { ProviderTrace } from "../core/ports";
 
 export type CallKind = "unknown" | "human" | "voicemail" | "screening" | "ivr";
 export type HandlingState =
-  | CallKind
-  | "screening-wait"
-  | "ivr-wait"
-  | "voicemail-speaking"
-  | "ended";
+  CallKind | "screening-wait" | "ivr-wait" | "voicemail-speaking" | "ended";
 export type HandlingAction =
   | "none"
   | "conversation"
@@ -142,6 +138,9 @@ export class CallHandling {
   ) {
     this.started = this.stateSince = now;
   }
+  get sendingDtmf(): boolean {
+    return this.dtmfInFlight;
+  }
   get automated(): boolean {
     return !["unknown", "human"].includes(this.state);
   }
@@ -178,6 +177,7 @@ export class CallHandling {
     return { action: "leave-message" };
   }
   observe(text: string, final: boolean, now = Date.now()): HandlingResult {
+    if (!text.trim()) return { action: "none" };
     if (!this.enabled) return { action: final ? "conversation" : "none" };
     if (this.state === "ended") return { action: "wait" };
     if (final) this.speaking = false;
@@ -281,6 +281,7 @@ export class CallHandling {
         this.agent.callHandling.menuSilenceMs
     ) {
       this.menuFinalAt = undefined;
+      this.stateSince = now;
       return { action: "menu", text: this.menuText };
     }
     if (
@@ -377,6 +378,15 @@ export class CallHandling {
     this.state = "ended";
   }
   private finish(reason: string, now: number): HandlingResult {
+    this.trace.log("call.handling_ended", {
+      reason,
+      state: this.state,
+      stateAgeMs: now - this.stateSince,
+      selections: this.selections,
+      speaking: this.speaking,
+      quietMs: now - this.lastVoiceAt,
+      dtmfInFlight: this.dtmfInFlight,
+    });
     this.transition(
       "ended",
       { kind: "unknown", confidence: 0, evidence: reason },

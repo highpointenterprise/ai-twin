@@ -339,6 +339,7 @@ async function main(): Promise<void> {
     logEvent("server.public_listening", { port: env.PORT }),
   );
   void api.dispatcher.start().catch((error) => logEvent("callqueue.start_failed", errorDetail(error)));
+  deps.createCallRouter = api.sessionCallRouter;
   deps.apiKeysRouter = keyManagementRoutes(api.keys, env.WORKSPACE_USER_ID, env.PUBLIC_BASE_URL.replace(/\/workspaces\/[^/]+\/?$/, ""));
   const adminApp = createAdminApp(deps, {
     router: createAuthRouter(authStore, env.AUTH_API_SECRET),

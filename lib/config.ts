@@ -36,7 +36,10 @@ export const stopSpeakingSchema = z.object({
 export const voicemailSchema = z
   .object({
     enabled: z.boolean().default(false),
-    provider: z.enum(["builtin", "twilio"]).default("builtin").transform(() => "builtin" as const),
+    provider: z
+      .enum(["builtin", "twilio"])
+      .default("builtin")
+      .transform(() => "builtin" as const),
     action: z.enum(["hangup", "leave-message"]).default("hangup"),
     message: z.string().trim().max(1500).default(""),
     detectionTimeoutSeconds: z.number().int().min(3).max(59).default(30),
@@ -76,6 +79,26 @@ export const callHandlingSchema = z.object({
   maxMenuSelections: z.number().int().min(1).max(30).default(12),
   maxRepeatedMenuSelections: z.number().int().min(1).max(5).default(2),
 });
+export const dtmfNavigationSchema = z
+  .object({
+    ivrConfidenceThreshold: callHandlingSchema.shape.ivrConfidenceThreshold
+      .removeDefault()
+      .optional(),
+    menuSilenceMs: callHandlingSchema.shape.menuSilenceMs
+      .removeDefault()
+      .optional(),
+    ivrWaitSeconds: callHandlingSchema.shape.ivrWaitSeconds
+      .removeDefault()
+      .optional(),
+    maxMenuSelections: callHandlingSchema.shape.maxMenuSelections
+      .removeDefault()
+      .optional(),
+    maxRepeatedMenuSelections:
+      callHandlingSchema.shape.maxRepeatedMenuSelections
+        .removeDefault()
+        .optional(),
+  })
+  .strict();
 export const assistantSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
@@ -195,6 +218,7 @@ export const toolSchema = z
     z.object({
       ...toolBase,
       type: z.literal("dtmf"),
+      navigation: dtmfNavigationSchema.optional(),
       toneDurationMs: z.number().int().min(100).max(1000).default(200),
       gapMs: z.number().int().min(50).max(1000).default(100),
     }),

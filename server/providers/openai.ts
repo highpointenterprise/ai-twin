@@ -53,7 +53,7 @@ export const createOpenAiModel = (
     return created;
   };
   return {
-    async *stream({ messages, model: spec, temperature, tools, trace }, signal) {
+    async *stream({ messages, model: spec, temperature, tools, trace, toolChoice }, signal) {
       const route = resolveModel(spec);
       const model = spec;
       const stream = await client(route).chat.completions.create(
@@ -70,6 +70,7 @@ export const createOpenAiModel = (
                   function: t,
                 })),
                 parallel_tool_calls: false,
+                ...(toolChoice ? { tool_choice: { type: "function" as const, function: { name: toolChoice } } } : {}),
               }
             : {}),
         },

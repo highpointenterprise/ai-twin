@@ -479,15 +479,7 @@ export function AssistantSettings({
               </>
             )}
           </fieldset>
-          <fieldset>
-            <legend>Phone menus</legend>
-            <p className="hint">Attach a DTMF tool to navigate menus. Keypad tones wait for the final transcript and a quiet input stream. Repeated menus and navigation time are bounded.</p>
-            {number("IVR evidence threshold", a.callHandling.ivrConfidenceThreshold, (v) => set("callHandling", { ...a.callHandling, ivrConfidenceThreshold: v }), 0.7, 1, 0.01)}
-            {number("Menu quiet period (ms)", a.callHandling.menuSilenceMs, (v) => set("callHandling", { ...a.callHandling, menuSilenceMs: v }), 200, 3000, 100)}
-            {number("Next menu timeout (seconds)", a.callHandling.ivrWaitSeconds, (v) => set("callHandling", { ...a.callHandling, ivrWaitSeconds: v }), 5, 120)}
-            {number("Maximum menu selections", a.callHandling.maxMenuSelections, (v) => set("callHandling", { ...a.callHandling, maxMenuSelections: v }), 1, 30)}
-            {number("Maximum attempts per menu", a.callHandling.maxRepeatedMenuSelections, (v) => set("callHandling", { ...a.callHandling, maxRepeatedMenuSelections: v }), 1, 5)}
-          </fieldset>
+          <p className="hint">Configure phone-menu navigation in the attached DTMF tool in Tools.</p>
           <fieldset>
             <legend>Call screening</legend>
             <label className="check">

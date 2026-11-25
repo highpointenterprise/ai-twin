@@ -18,7 +18,7 @@ export class AuthMailQueue implements MailQueue {
     if (options.appUrl) {
       const url = new URL(options.appUrl);
       if (url.username || url.password || url.search || url.hash || url.pathname !== "/" ||
-        (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))) throw new Error("AUTH_APP_URL must be an HTTPS origin or local development origin.");
+        (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))) throw new Error("NEXTAUTH_URL (or legacy AUTH_APP_URL) must be an HTTPS origin or local development origin.");
     }
     if (options.from && !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(options.from)) throw new Error("AUTH_EMAIL_FROM must be a sender email address.");
     this.client = new SESv2Client({ region: options.region, maxAttempts: 2 });

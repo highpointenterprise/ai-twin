@@ -1,3 +1,4 @@
+import { simpleCallRoutes } from "./routes/create-call";
 import type Redis from "ioredis";
 import type { Db } from "mongodb";
 import express, { type Express, type Router } from "express";
@@ -41,6 +42,7 @@ export interface ApiV1Dependencies {
 }
 
 export interface ApiV1 {
+  sessionCallRouter: Router;
   router: Router;
   dispatcher: CallDispatcher;
   keys: ApiKeyStore;
@@ -125,6 +127,7 @@ export const createApiV1 = async (deps: ApiV1Dependencies): Promise<ApiV1> => {
   });
   return {
     router,
+    sessionCallRouter: simpleCallRoutes(calls),
     dispatcher,
     keys,
     mount: (app) => {

@@ -224,3 +224,86 @@ test("custom functions validate arguments and correlate correlated webhook resul
     /FUNCTION_ALLOWED_HOSTS/,
   );
 });
+
+test("DTMF tool API round-trips navigation and timing without changing legacy tools", async () => {
+  const { toolBodySchema } = await import("../server/api/v1/schemas/tool");
+  const { toToolInput, toApiToolBody } =
+    await import("../server/api/v1/mappers/tool");
+  const body = toolBodySchema.parse({
+    type: "dtmf",
+    function: { name: "keypad" },
+    navigation: { ivrWaitSeconds: 45 },
+    toneDurationMs: 300,
+    gapMs: 150,
+  });
+  const result = toApiToolBody({ ...toToolInput(body), id: "keypad" });
+  assert.equal(result.type, "dtmf");
+  if (result.type !== "dtmf") throw new Error("Wrong tool type");
+  assert.deepEqual(result.navigation, { ivrWaitSeconds: 45 });
+  assert.equal(result.toneDurationMs, 300);
+  assert.equal(result.gapMs, 150);
+  assert.equal(
+    toolSchema.parse({ type: "dtmf", name: "keypad", description: "Menu" })
+      .type,
+    "dtmf",
+  );
+  assert.equal(
+    toolBodySchema.safeParse({ ...body, navigation: { ivrWaitSeconds: 0 } })
+      .success,
+    false,
+  );
+});
+
+test("provider forwards explicit keypad selection to the model API", async (t) => {
+  const { createOpenAiModel } = await import("../server/providers/openai");
+  const prior = env.OPENAI_API_KEY;
+  env.OPENAI_API_KEY = "test-key";
+  t.after(() => {
+    env.OPENAI_API_KEY = prior;
+  });
+  let request: any;
+  const model = createOpenAiModel(
+    () =>
+      ({
+        chat: {
+          completions: {
+            create: async (input: any) => {
+              request = input;
+              return (async function* () {
+                yield {
+                  choices: [],
+                  usage: {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                  },
+                };
+              })();
+            },
+          },
+        },
+      }) as any,
+  );
+  for await (const _ of model.stream(
+    {
+      messages: [],
+      model: "gpt-4o",
+      temperature: 0,
+      tools: [
+        {
+          name: "dial_keypad",
+          description: "Menu",
+          parameters: { type: "object" },
+        },
+      ],
+      toolChoice: "dial_keypad",
+    },
+    new AbortController().signal,
+  )) {
+  }
+  assert.deepEqual(request.tool_choice, {
+    type: "function",
+    function: { name: "dial_keypad" },
+  });
+  assert.equal(request.parallel_tool_calls, false);
+});
