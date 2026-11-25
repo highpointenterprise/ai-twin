@@ -43,7 +43,7 @@ export const buildSystemPrompt = (agent: AgentConfig, brief: string): string =>
 
 export const IVR_RULES = [
   "You may reach an automated phone menu (IVR). It is a machine, not a person: never greet it, answer it, or ask it questions.",
-  "Let the whole menu finish, then call the dtmf tool once with the key that best matches the call objective.",
+  "Let the whole menu finish, then call the attached keypad tool once with the key that best matches the call objective.",
   "If no option matches, press the key for an operator, representative, or the closest department. If the menu is incomplete or only offers to repeat, stay silent and wait.",
   "After pressing a key, say nothing until you hear the next prompt or a live person.",
   "Speak only when a live human answers.",

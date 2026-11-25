@@ -92,6 +92,7 @@ export interface ToolContext {
   playAudio: (audio: Buffer) => Promise<void>;
 }
 export interface ModelRequest {
+  toolChoice?: string;
   messages: ChatMessage[];
   tools?: ModelTool[];
   model: string;

@@ -289,3 +289,183 @@ test("late greeting transcripts cannot interrupt a voicemail message already pla
   );
   await until(() => h.ended.includes("voicemail"));
 });
+
+test("long menu gets a fresh decision budget and empty partials do not cancel it", () => {
+  const h = new CallHandling(configured(), trace, true, true, 0);
+  h.observe("Press one for sales", false, 0);
+  h.observe("Press one for sales, press zero for the operator", true, 4900);
+  assert.equal(h.tick(5100).action, "menu");
+  assert.equal(h.observe("", false, 5101).action, "none");
+  assert.equal(h.tick(5200).action, "none");
+  assert.equal(h.tick(10100).reason, "ivr-timeout");
+});
+
+test("IVR decision survives audio packets during menu selection and uses the attached tool name", async (t) => {
+  let requested = false,
+    executed = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const tool = {
+    ...toolSchema.parse({
+      type: "dtmf",
+      name: "dial_keypad",
+      description: "Reach the operator",
+      navigation: { menuSilenceMs: 200 },
+    }),
+    id: "keypad",
+  };
+  const h = harness(
+    {
+      direction: "outbound",
+      agent: agent({
+        stopSpeakingPlan: { voiceSeconds: 0.1, numWords: 0 },
+        callHandling: { menuSilenceMs: 3000 },
+      }),
+      tools: [tool],
+    },
+    {
+      model: {
+        async *stream(request, signal) {
+          requested = true;
+          assert.equal(request.toolChoice, "dial_keypad");
+          assert.deepEqual(
+            request.tools?.map((t) => t.name),
+            ["dial_keypad"],
+          );
+          await gate;
+          signal.throwIfAborted();
+          yield {
+            type: "tool-call" as const,
+            call: {
+              id: "press",
+              name: "dial_keypad",
+              arguments: '{"keys":"0"}',
+            },
+          };
+        },
+        complete: async () => "",
+      },
+      executeTool: async () => {
+        executed++;
+        return { result: { status: "tones-played" }, waitForUser: true };
+      },
+    },
+  );
+  t.after(() => {
+    release();
+    h.session.close();
+  });
+  await tick();
+  h.events.onEnd("Press one for dispatch, press zero for the operator.");
+  await until(() => requested);
+  h.session.pushAudio(Buffer.alloc(160, 255).toString("base64"));
+  h.session.pushAudio(tone(700, 200).toString("base64"));
+  h.events.onPartial("");
+  await new Promise((r) => setTimeout(r, 250));
+  release();
+  await until(() => executed === 1);
+  assert.equal(h.spoken.length, 0);
+});
+
+test("confirmed resumed speech cancels a pending menu decision before digits are sent", async (t) => {
+  let pending = false,
+    executed = 0,
+    cancelled = false;
+  const tool = {
+    ...toolSchema.parse({
+      type: "dtmf",
+      name: "keypad",
+      description: "Operator",
+    }),
+    id: "keypad",
+  };
+  const h = harness(
+    { direction: "outbound", agent: configured(), tools: [tool] },
+    {
+      model: {
+        async *stream(_request, signal) {
+          pending = true;
+          await new Promise<void>((resolve) =>
+            signal.addEventListener(
+              "abort",
+              () => {
+                cancelled = true;
+                resolve();
+              },
+              { once: true },
+            ),
+          );
+          signal.throwIfAborted();
+          yield {
+            type: "tool-call" as const,
+            call: { id: "digit", name: "keypad", arguments: '{"keys":"0"}' },
+          };
+        },
+        complete: async () => "",
+      },
+      executeTool: async () => {
+        executed++;
+        return { result: {} };
+      },
+    },
+  );
+  t.after(() => h.session.close());
+  await tick();
+  h.events.onEnd("Press zero for the operator");
+  await until(() => pending);
+  h.events.onSpeechStart();
+  await until(() => cancelled);
+  assert.equal(executed, 0);
+});
+
+test("DTMF playback is not cleared by a new STT partial or resume event", async (t) => {
+  let sending = false,
+    finished = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const tool = {
+    ...toolSchema.parse({
+      type: "dtmf",
+      name: "keypad",
+      description: "Operator",
+    }),
+    id: "keypad",
+  };
+  const h = harness(
+    { direction: "outbound", agent: configured(), tools: [tool] },
+    {
+      model: {
+        async *stream() {
+          yield {
+            type: "tool-call" as const,
+            call: { id: "digit", name: "keypad", arguments: '{"keys":"0"}' },
+          };
+        },
+        complete: async () => "",
+      },
+      executeTool: async (_tool, _call, context) => {
+        sending = true;
+        await gate;
+        context.signal.throwIfAborted();
+        finished = true;
+        return { result: {}, waitForUser: true };
+      },
+    },
+  );
+  t.after(() => {
+    release();
+    h.session.close();
+  });
+  await tick();
+  h.events.onEnd("Press zero for the operator");
+  await until(() => sending);
+  h.events.onSpeechStart();
+  h.events.onPartial("Thank you for calling");
+  h.events.onResume();
+  release();
+  await until(() => finished);
+});

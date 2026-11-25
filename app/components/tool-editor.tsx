@@ -340,16 +340,16 @@ export function ToolEditor({
                 Description · model chooses the destination
               </option>
               <option value="phrase">
-               Transfer phrase · transfers as soon as the agent says it
+                Transfer phrase · transfers as soon as the agent says it
               </option>
             </select>
           </label>
           <p className="hint">
             The transfer message finishes before dialing. Both warm and blind
             modes support description or phrase routing. Description mode: the
-            model picks the destination, then says the message. Phrase mode:
-            the agent is told the phrase, and the call transfers right after
-            the agent says it (punctuation and case are ignored).
+            model picks the destination, then says the message. Phrase mode: the
+            agent is told the phrase, and the call transfers right after the
+            agent says it (punctuation and case are ignored).
           </p>
           {tool.destinations.map((d, i) => (
             <fieldset key={i}>
@@ -443,6 +443,65 @@ export function ToolEditor({
       )}
       {tool.type === "dtmf" && (
         <>
+          <fieldset>
+            <legend>Phone-menu navigation</legend>
+            <p className="hint">
+              Overrides the assistant's legacy menu settings. Leave blank to
+              keep existing settings. Digits are selected using the tool
+              description and assistant instructions.
+            </p>
+            {(
+              [
+                [
+                  "ivrConfidenceThreshold",
+                  "IVR evidence threshold",
+                  0.7,
+                  1,
+                  0.01,
+                ],
+                ["menuSilenceMs", "Menu quiet period (ms)", 200, 3000, 100],
+                [
+                  "ivrWaitSeconds",
+                  "Menu decision / next-menu timeout (seconds)",
+                  5,
+                  120,
+                  1,
+                ],
+                ["maxMenuSelections", "Maximum menu selections", 1, 30, 1],
+                [
+                  "maxRepeatedMenuSelections",
+                  "Maximum attempts per menu",
+                  1,
+                  5,
+                  1,
+                ],
+              ] as const
+            ).map(([key, label, min, max, step]) => (
+              <label key={key}>
+                {label}
+                <input
+                  type="number"
+                  min={min}
+                  max={max}
+                  step={step}
+                  placeholder="Use existing assistant setting"
+                  value={tool.navigation?.[key] ?? ""}
+                  onChange={(e) =>
+                    setTool({
+                      ...tool,
+                      navigation: {
+                        ...tool.navigation,
+                        [key]:
+                          e.target.value === ""
+                            ? undefined
+                            : Number(e.target.value),
+                      },
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </fieldset>
           <p className="hint">
             Sends in-band keypad audio through Twilio. Supports 0–9, *, #, A–D;
             w pauses 0.5 seconds and W pauses 1 second. Test recognition with

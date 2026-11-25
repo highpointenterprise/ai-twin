@@ -1,10 +1,13 @@
 import { z } from "zod";
-import { e164 } from "../../../../lib/config";
+import { e164, dtmfNavigationSchema } from "../../../../lib/config";
 import { listQuerySchema } from "./common";
 
 const functionName = z
   .string()
-  .regex(/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/, "Use a function name, e.g. lookup_customer.");
+  .regex(
+    /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/,
+    "Use a function name, e.g. lookup_customer.",
+  );
 
 const httpsUrl = z
   .string()
@@ -70,7 +73,10 @@ const destination = z
   .strict();
 
 const functionInfo = z
-  .object({ name: functionName.optional(), description: z.string().trim().min(1).max(2000).optional() })
+  .object({
+    name: functionName.optional(),
+    description: z.string().trim().min(1).max(2000).optional(),
+  })
   .strict();
 
 const transferTool = z
@@ -81,9 +87,21 @@ const transferTool = z
   })
   .strict();
 
-const dtmfTool = z.object({ type: z.literal("dtmf"), function: functionInfo.optional() }).strict();
+const dtmfTool = z
+  .object({
+    type: z.literal("dtmf"),
+    navigation: dtmfNavigationSchema.optional(),
+    toneDurationMs: z.number().int().min(100).max(1000).optional(),
+    gapMs: z.number().int().min(50).max(1000).optional(),
+    function: functionInfo.optional(),
+  })
+  .strict();
 
-export const toolBodySchema = z.discriminatedUnion("type", [functionTool, transferTool, dtmfTool]);
+export const toolBodySchema = z.discriminatedUnion("type", [
+  functionTool,
+  transferTool,
+  dtmfTool,
+]);
 export type ToolBody = z.infer<typeof toolBodySchema>;
 
 export const toolListQuerySchema = listQuerySchema;
