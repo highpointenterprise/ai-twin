@@ -22,6 +22,7 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
       ...(["numbers", "integrations"].includes(path[0]) ? { signal: AbortSignal.timeout(55_000) } : {}),
       headers: {
         Authorization: `Bearer ${token}`,
+        ...(request.headers.has("idempotency-key") ? { "Idempotency-Key": request.headers.get("idempotency-key")! } : {}),
         ...(request.headers.has("content-type") ? { "Content-Type": request.headers.get("content-type")! } : {}),
       },
       ...(!["GET", "HEAD"].includes(request.method) ? { body: await limitedBody(request, 128 * 1024) } : {}),

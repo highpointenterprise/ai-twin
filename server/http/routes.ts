@@ -1,3 +1,4 @@
+import { renderCallAgent } from "../calls/variables";
 import { recordingTwiml, type CallRecordings } from "../recordings/service";
 import {
   numberSearchSchema,
@@ -65,6 +66,7 @@ export interface HttpDeps {
   twilioSettings?: TwilioSettings;
   billingRouter?: Router;
   apiKeysRouter?: Router;
+  createCallRouter?: Router;
   phoneNumbers?: import("../phone-numbers/service").PhoneNumbers;
   meetings?: MeetingService;
   costs?: CostTracker;
@@ -297,6 +299,7 @@ export const createAdminApp = (
       });
     }),
   );
+  if (d.createCallRouter) app.use("/api/create-call", d.createCallRouter);
   if (d.apiKeysRouter) app.use("/api/api-keys", d.apiKeysRouter);
   if (d.billingRouter) app.use("/api/billing", d.billingRouter);
   app.get(
@@ -492,7 +495,7 @@ export const createAdminApp = (
     "/api/calls",
     handle(async (req, res) => {
       const input = callRequestSchema.parse(req.body),
-        agent = effectiveAssistant(await store.get(input.agentId));
+        agent = renderCallAgent(effectiveAssistant(await store.get(input.agentId)), { toNumber: input.to, "customer.number": input.to, ...input.variables });
       requireReady(d, agent.voiceId);
       if (capacity(d))
         throw new HttpError(503, "Concurrent call limit reached.");
