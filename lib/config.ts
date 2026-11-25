@@ -36,11 +36,14 @@ export const stopSpeakingSchema = z.object({
 export const voicemailSchema = z
   .object({
     enabled: z.boolean().default(false),
-    provider: z.literal("twilio").default("twilio"),
+    provider: z.enum(["builtin", "twilio"]).default("builtin").transform(() => "builtin" as const),
     action: z.enum(["hangup", "leave-message"]).default("hangup"),
     message: z.string().trim().max(1500).default(""),
     detectionTimeoutSeconds: z.number().int().min(3).max(59).default(30),
     unknownAction: z.enum(["continue", "hangup"]).default("continue"),
+    confidenceThreshold: z.number().min(0.7).max(1).default(0.85),
+    beepWaitSeconds: z.number().min(3).max(60).default(20),
+    beepTimeoutAction: z.enum(["hangup", "leave-message"]).default("hangup"),
   })
   .superRefine((v, ctx) => {
     if (v.enabled && v.action === "leave-message" && !v.message)
@@ -55,6 +58,8 @@ export const screeningSchema = z
     enabled: z.boolean().default(false),
     response: z.string().trim().max(500).default(""),
     waitSeconds: z.number().int().min(15).max(120).default(60),
+    confidenceThreshold: z.number().min(0.7).max(1).default(0.85),
+    maxResponses: z.number().int().min(1).max(5).default(2),
   })
   .superRefine((v, ctx) => {
     if (v.enabled && !v.response)
@@ -64,6 +69,13 @@ export const screeningSchema = z
         message: "Enter your name and purpose for screeners.",
       });
   });
+export const callHandlingSchema = z.object({
+  ivrConfidenceThreshold: z.number().min(0.7).max(1).default(0.85),
+  menuSilenceMs: z.number().int().min(200).max(3000).default(700),
+  ivrWaitSeconds: z.number().int().min(5).max(120).default(30),
+  maxMenuSelections: z.number().int().min(1).max(30).default(12),
+  maxRepeatedMenuSelections: z.number().int().min(1).max(5).default(2),
+});
 export const assistantSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
@@ -92,6 +104,7 @@ export const assistantSchema = z
     stopSpeakingPlan: stopSpeakingSchema.prefault({}),
     voicemailDetection: voicemailSchema.prefault({}),
     callScreening: screeningSchema.prefault({}),
+    callHandling: callHandlingSchema.prefault({}),
     toolIds: z.array(z.string().uuid()).max(30).default([]),
     silenceTimeoutSeconds: z.number().min(10).max(600).default(60),
     maxDurationSeconds: z.number().int().min(30).max(7200).default(1800),

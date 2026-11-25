@@ -226,7 +226,7 @@ export function attachMediaServer(
                 outPackets++;
                 outBytes += base64ByteLength(event.media.payload);
                 if (outPackets === 1)
-                  log("media.first_outbound_audio", { bytes: outBytes });
+                  log("media.first_outbound_audio", { bytes: outBytes, socketToAudioMs: Date.now() - began, sessionToAudioMs: Date.now() - (mediaBegan ?? began) });
               } else
                 log("media.sent", {
                   event: event.event ?? "unknown",

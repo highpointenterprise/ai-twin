@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
   AudioOutputPort,
   SessionInit,
@@ -6,7 +6,11 @@ import type {
   SynthesizerFactory,
 } from "../core/ports";
 import { errorDetail } from "../observability/diagnostics";
-import { AudioCache } from "./audio-cache";
+import {
+  speechCache as sharedCache,
+  speechCacheKey,
+  type PreparedOpening,
+} from "./preparation";
 import { base64ByteLength } from "./audio";
 import { TurnGate } from "./gate";
 import { delay } from "./timing";
@@ -14,12 +18,13 @@ import { delay } from "./timing";
 const MAX_UTTERANCE_SECONDS = 180;
 const DEFAULT_CHARS_PER_MS = 0.0145;
 const PLAYOUT_LAG_MS = 120;
-const sharedCache = new AudioCache();
 
 export interface SpeechStreamOptions {
+  preconnect?: boolean;
   gate?: TurnGate;
   floorMs?: number;
   cacheKey?: string;
+  prepared?: PreparedOpening;
   onFirstAudio?: (at: number) => void;
 }
 
@@ -47,6 +52,7 @@ export class SpeechStream {
   private sentAudio = false;
   private counted = false;
   private cacheHit: readonly string[] | undefined;
+  private unsubscribe?: () => void;
   firstAudioAt?: number;
 
   constructor(
@@ -65,7 +71,8 @@ export class SpeechStream {
       cached: !!this.cacheHit,
     });
     signal.addEventListener("abort", this.onAbort, { once: true });
-    if (!this.cacheHit) this.connect();
+    if (options.preconnect && !this.cacheHit && !options.prepared?.usable)
+      this.synth = this.createSynthesizer();
   }
 
   get text(): string {
@@ -76,11 +83,19 @@ export class SpeechStream {
     if (!text.trim() || this.disposed || this.signal.aborted) return;
     this.spokenText += (this.spokenText ? " " : "") + text.trim();
     if (this.cacheHit) return;
+    if (this.options.prepared?.usable) {
+      this.unsubscribe ??= this.options.prepared.subscribe((payload) =>
+        this.receive(payload),
+      );
+      return;
+    }
+    this.synth ??= this.createSynthesizer();
     const synth = this.synth!;
     this.pushChain = this.pushChain
       .then(() => synth.push(text))
       .catch((error: unknown) => {
-        this.failure ??= error instanceof Error ? error : new Error("TTS failed");
+        this.failure ??=
+          error instanceof Error ? error : new Error("TTS failed");
       });
   }
 
@@ -91,7 +106,8 @@ export class SpeechStream {
       if (!this.spokenText.trim()) return { spoken: "" };
       if (this.cacheHit) this.replayCached(this.cacheHit);
       else {
-        await this.synth!.end();
+        if (this.unsubscribe) await this.options.prepared!.done;
+        else await this.synth!.end();
         this.synthesisComplete = true;
       }
       await this.releasing;
@@ -144,16 +160,19 @@ export class SpeechStream {
     this.disposed = true;
     this.signal.removeEventListener("abort", this.onAbort);
     this.synth?.close();
+    this.unsubscribe?.();
     if (this.counted) this.host.streamClosed();
   }
 
   private readonly onAbort = (): void => {
+    this.options.prepared?.cancel();
+    this.unsubscribe?.();
     this.synth?.close();
     this.host.clearIfSent(this.sentAudio);
   };
 
-  private connect(): void {
-    this.synth = this.host.synthesize(
+  private createSynthesizer(): SpeechSynthesizer {
+    return this.host.synthesize(
       this.host.voiceId,
       (payload) => this.receive(payload),
       this.host.voice,
@@ -304,7 +323,8 @@ export class SpeechOutput {
           if (sent) this.clear();
         },
         streamOpened: () => void this.activeStreams++,
-        streamClosed: () => void (this.activeStreams = Math.max(0, this.activeStreams - 1)),
+        streamClosed: () =>
+          void (this.activeStreams = Math.max(0, this.activeStreams - 1)),
       },
       signal,
       options,
@@ -312,13 +332,7 @@ export class SpeechOutput {
   }
 
   cacheKey(text: string): string {
-    const { voiceId, voice } = this.init.agent;
-    const format = this.init.outputAudioFormat;
-    return createHash("sha256")
-      .update(
-        JSON.stringify([voiceId, voice, format?.encoding, format?.sampleRate, text]),
-      )
-      .digest("hex");
+    return speechCacheKey(this.init.agent, text, this.init.outputAudioFormat);
   }
 
   async speak(
@@ -331,9 +345,31 @@ export class SpeechOutput {
     const stream = this.open(signal, {
       floorMs: waitMs,
       cacheKey: cache ? this.cacheKey(text) : undefined,
+      prepared:
+        cache && this.init.preparedOpening?.key === this.cacheKey(text)
+          ? this.init.preparedOpening
+          : undefined,
     });
     stream.write(text);
-    await stream.finish();
+    try {
+      await stream.finish();
+    } catch (error) {
+      if (
+        !signal.aborted &&
+        cache &&
+        this.init.preparedOpening &&
+        !this.init.preparedOpening.usable &&
+        !stream.firstAudioAt
+      ) {
+        this.init.trace.log("opening.preparation_fallback");
+        const retry = this.open(signal, {
+          floorMs: waitMs,
+          cacheKey: this.cacheKey(text),
+        });
+        retry.write(text);
+        await retry.finish();
+      } else throw error;
+    }
   }
 
   async play(audio: Buffer, signal: AbortSignal): Promise<void> {

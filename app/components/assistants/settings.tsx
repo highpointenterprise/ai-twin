@@ -395,14 +395,14 @@ export function AssistantSettings({
                   })
                 }
               />
-              Enable Twilio answering-machine detection for outbound calls
+              Enable built-in voicemail detection for outbound calls
             </label>
             {a.voicemailDetection.enabled && (
               <>
                 <p className="hint">
-                  Detection can delay the opening. Leave-message mode waits for
-                  Twilio's end-of-greeting result before playing the message
-                  with your ElevenLabs voice.
+                  Uses live transcription and beep detection without delaying the opening.
+                  English greeting rules use evidence scores, not calibrated probabilities.
+                  Leave-message mode waits for a beep; uncertain cases use your fallback.
                 </p>
                 <label>
                   On voicemail
@@ -450,6 +450,16 @@ export function AssistantSettings({
                   3,
                   59,
                 )}
+                {number("Voicemail evidence threshold", a.voicemailDetection.confidenceThreshold, (v) => set("voicemailDetection", { ...a.voicemailDetection, confidenceThreshold: v }), 0.7, 1, 0.01)}
+                {a.voicemailDetection.action === "leave-message" && <>
+                  {number("Maximum beep wait (seconds)", a.voicemailDetection.beepWaitSeconds, (v) => set("voicemailDetection", { ...a.voicemailDetection, beepWaitSeconds: v }), 3, 60)}
+                  <label>When no beep is detected
+                    <select aria-label="When no beep is detected" value={a.voicemailDetection.beepTimeoutAction} onChange={(e) => set("voicemailDetection", { ...a.voicemailDetection, beepTimeoutAction: e.target.value as "hangup" | "leave-message" })}>
+                      <option value="hangup">Hang up without leaving a message</option>
+                      <option value="leave-message">Leave if input is quiet; otherwise hang up</option>
+                    </select>
+                  </label>
+                </>}
                 <label>
                   If detection is inconclusive
                   <select
@@ -468,6 +478,15 @@ export function AssistantSettings({
                 </label>
               </>
             )}
+          </fieldset>
+          <fieldset>
+            <legend>Phone menus</legend>
+            <p className="hint">Attach a DTMF tool to navigate menus. Keypad tones wait for the final transcript and a quiet input stream. Repeated menus and navigation time are bounded.</p>
+            {number("IVR evidence threshold", a.callHandling.ivrConfidenceThreshold, (v) => set("callHandling", { ...a.callHandling, ivrConfidenceThreshold: v }), 0.7, 1, 0.01)}
+            {number("Menu quiet period (ms)", a.callHandling.menuSilenceMs, (v) => set("callHandling", { ...a.callHandling, menuSilenceMs: v }), 200, 3000, 100)}
+            {number("Next menu timeout (seconds)", a.callHandling.ivrWaitSeconds, (v) => set("callHandling", { ...a.callHandling, ivrWaitSeconds: v }), 5, 120)}
+            {number("Maximum menu selections", a.callHandling.maxMenuSelections, (v) => set("callHandling", { ...a.callHandling, maxMenuSelections: v }), 1, 30)}
+            {number("Maximum attempts per menu", a.callHandling.maxRepeatedMenuSelections, (v) => set("callHandling", { ...a.callHandling, maxRepeatedMenuSelections: v }), 1, 5)}
           </fieldset>
           <fieldset>
             <legend>Call screening</legend>
@@ -492,6 +511,8 @@ export function AssistantSettings({
                   guaranteed. Choose “Assistant waits for user” for screened
                   calls.
                 </p>
+                {number("Screening evidence threshold", a.callScreening.confidenceThreshold, (v) => set("callScreening", { ...a.callScreening, confidenceThreshold: v }), 0.7, 1, 0.01)}
+                {number("Maximum screening responses", a.callScreening.maxResponses, (v) => set("callScreening", { ...a.callScreening, maxResponses: v }), 1, 5)}
                 <label htmlFor="screening-response">
                   Screening response
                   <textarea

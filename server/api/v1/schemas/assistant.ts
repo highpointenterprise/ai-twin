@@ -1,3 +1,4 @@
+import { callHandlingSchema, screeningSchema } from "../../../../lib/config";
 import { z } from "zod";
 import { assistantServerSchema } from "../../../../lib/assistant-server";
 import { listQuerySchema } from "./common";
@@ -59,7 +60,11 @@ const voicemailDetectionSchema = z.union([
   z.literal("off"),
   z
     .object({
-      provider: z.literal("twilio"),
+      provider: z.enum(["builtin", "twilio"]),
+      confidenceThreshold: z.number().min(0.7).max(1).optional(),
+      beepWaitSeconds: z.number().min(3).max(60).optional(),
+      beepTimeoutAction: z.enum(["hangup", "leave-message"]).optional(),
+      unknownAction: z.enum(["continue", "hangup"]).optional(),
       enabled: z.boolean().optional(),
       machineDetectionTimeout: z.number().int().min(3).max(59).optional(),
     })
@@ -82,6 +87,8 @@ export const assistantBodySchema = z
       ])
       .optional(),
     voicemailDetection: voicemailDetectionSchema.optional(),
+    callScreening: screeningSchema.optional(),
+    callHandling: callHandlingSchema.partial().strict().optional(),
     voicemailMessage: z.string().trim().max(1500).optional(),
     silenceTimeoutSeconds: z.number().min(10).max(600).optional(),
     maxDurationSeconds: z.number().int().min(30).max(7200).optional(),

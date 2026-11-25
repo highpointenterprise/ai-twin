@@ -59,7 +59,10 @@ export const toAgentInput = (body: AssistantBody): AssistantInput => {
     },
     startSpeakingPlan: { waitSeconds: body.startSpeakingPlan?.waitSeconds },
     stopSpeakingPlan: body.stopSpeakingPlan ?? {},
+    callScreening: body.callScreening,
+    callHandling: body.callHandling,
     voicemailDetection: {
+      ...(detection && detection !== "off" ? detection : {}),
       enabled: voicemailEnabled,
       action: body.voicemailMessage ? "leave-message" : "hangup",
       message: body.voicemailMessage ?? "",
@@ -71,6 +74,7 @@ export const toAgentInput = (body: AssistantBody): AssistantInput => {
 };
 
 export const toApiAssistant = (document: AssistantDocument): ApiAssistant => {
+  document = { ...document, ...assistantSchema.parse(document) };
   const voicemail = document.voicemailDetection;
   return {
     id: document.id,
@@ -101,10 +105,12 @@ export const toApiAssistant = (document: AssistantDocument): ApiAssistant => {
       eagerEndOfTurnConfidenceThreshold: document.transcriber.eagerEotThreshold,
       eotTimeoutMs: document.transcriber.eotTimeoutMs,
     },
+    callScreening: document.callScreening,
+    callHandling: document.callHandling,
     firstMessage: document.firstMessage,
     firstMessageMode: document.firstMessageMode,
     voicemailDetection: voicemail.enabled
-      ? { provider: "twilio", enabled: true, machineDetectionTimeout: voicemail.detectionTimeoutSeconds }
+      ? { provider: "builtin", enabled: true, machineDetectionTimeout: voicemail.detectionTimeoutSeconds, confidenceThreshold: voicemail.confidenceThreshold, beepWaitSeconds: voicemail.beepWaitSeconds, beepTimeoutAction: voicemail.beepTimeoutAction, unknownAction: voicemail.unknownAction }
       : "off",
     ...(voicemail.enabled && voicemail.action === "leave-message" ? { voicemailMessage: voicemail.message } : {}),
     silenceTimeoutSeconds: document.silenceTimeoutSeconds,

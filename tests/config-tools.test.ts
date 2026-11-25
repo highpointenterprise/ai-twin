@@ -10,8 +10,6 @@ import { AgentStore } from "../server/store/agents";
 import { phraseTransfer, modelTools } from "../server/tools/definitions";
 import { dtmfAudio, decodeMulaw } from "../server/speech/audio";
 import { shouldInterrupt } from "../server/speech/timing";
-import { ScreeningGate } from "../server/calls/screening";
-import { voicemailAction } from "../server/calls/voicemail";
 import { env } from "../lib/env";
 import { agent, telephony } from "./helpers";
 const transfer = (mode = "description") =>
@@ -156,45 +154,6 @@ test("DTMF encodes both frequencies and pause duration in 8 kHz mu-law", () => {
   assert.ok(power(697) > power(770) * 20);
   assert.ok(power(1209) > power(1336) * 20);
   assert.throws(() => dtmfAudio("bad", 200, 100));
-});
-test("screeners and hold messages are separate from human greetings", () => {
-  const gate = new ScreeningGate({
-    enabled: true,
-    response: "Luna about your appointment",
-    waitSeconds: 60,
-  });
-  assert.equal(
-    gate.inspect("Please state your name and reason for calling"),
-    "respond",
-  );
-  assert.equal(gate.inspect("Please hold while I connect you"), "wait");
-  assert.equal(gate.inspect("Hello, this is Sam"), "conversation");
-  assert.equal(gate.encountered, true);
-  assert.equal(
-    new ScreeningGate({
-      enabled: false,
-      response: "",
-      waitSeconds: 60,
-    }).inspect("Please state your name"),
-    "conversation",
-  );
-});
-test("voicemail waits for end of greeting and handles human, unknown, and fax results", () => {
-  const plan = agent({
-    voicemailDetection: {
-      enabled: true,
-      action: "leave-message",
-      message: "Call us back.",
-    },
-  }).voicemailDetection;
-  assert.equal(voicemailAction("machine_end_beep", plan), "voicemail");
-  assert.equal(voicemailAction("machine_start", plan), "hangup");
-  assert.equal(voicemailAction("human", plan), "conversation");
-  assert.equal(voicemailAction("fax", plan), "hangup");
-  assert.equal(
-    voicemailAction("unknown", { ...plan, unknownAction: "hangup" }),
-    "hangup",
-  );
 });
 test("backchannels don't interrupt, explicit interruption phrases do", () => {
   const plan = agent().stopSpeakingPlan;

@@ -111,7 +111,7 @@ export const createTwilioTelephony = (
         throw twilioConnectionError(error);
       }
     },
-    placeCall: async ({ to, from, url, statusUrl, voicemail }) => {
+    placeCall: async ({ to, from, url, statusUrl }) => {
       const c = await operation("dial", "", () =>
         client().calls.create({
           to,
@@ -126,16 +126,6 @@ export const createTwilioTelephony = (
             "answered",
             "completed",
           ],
-          ...(voicemail.enabled
-            ? {
-                machineDetection:
-                  voicemail.action === "leave-message"
-                    ? "DetectMessageEnd"
-                    : "Enable",
-                machineDetectionTimeout: voicemail.detectionTimeoutSeconds,
-                asyncAmd: "false",
-              }
-            : {}),
         }),
       );
       return c.sid;

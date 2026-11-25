@@ -1,6 +1,9 @@
 const aliases: Readonly<Record<string, string>> = {
   "user-ended": "manually-canceled",
-  "answer-detection-ended": "voicemail",
+  "answer-detection-ended": "answer-detection-inconclusive",
+  "voicemail-beep-timeout": "voicemail",
+  "ivr-timeout": "silence-timed-out",
+  "ivr-navigation-limit": "ivr-navigation-failed",
   "max-duration": "exceeded-max-duration",
   "silence-timeout": "silence-timed-out",
   "screening-timeout": "silence-timed-out",

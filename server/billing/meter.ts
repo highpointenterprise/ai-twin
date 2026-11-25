@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { mergeUsage } from "./merge-usage";
 import type { CallUsage, LlmUsageTotals, TelephonyUsage, ProviderUsageRequest } from "../../lib/types";
 
 export interface LlmUsage {
@@ -17,6 +18,13 @@ const count = (value: number | undefined): number =>
   value !== undefined && Number.isFinite(value) && value >= 0 ? value : 0;
 
 export class UsageMeter {
+  private readonly included = new Map<UsageMeter, CallUsage>();
+  include(source: UsageMeter): () => void {
+    if (source === this || this.included.has(source)) return () => {};
+    this.included.set(source, source.snapshot());
+    this.changed();
+    return source.subscribe((usage) => { this.included.set(source, usage); this.changed(); });
+  }
   readonly sttSeconds = new Map<string, number>();
   readonly ttsChars = new Map<string, number>();
   readonly llm = new Map<string, LlmUsageTotals>();
@@ -108,7 +116,7 @@ export class UsageMeter {
     this.changed();
   }
   snapshot(): CallUsage {
-    return {
+    const own: CallUsage = {
       requests: [...this.providerRequests.values()].map((entry) => ({ ...entry })),
       ...(this.mediaSeconds !== undefined ? { mediaSeconds: this.mediaSeconds } : {}),
       unmetered: [...this.unmetered.values()].map((entry) => ({ ...entry })),
@@ -118,6 +126,7 @@ export class UsageMeter {
       telephony: [...this.telephony.values()].map((entry) => ({ ...entry })),
       network: { receivedBytes: this.netInBytes, sentBytes: this.netOutBytes },
     };
+    return this.included.size ? mergeUsage([own, ...this.included.values()]) : own;
   }
   restore(usage: CallUsage): void {
     this.mediaSeconds = usage.mediaSeconds;

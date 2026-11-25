@@ -23,6 +23,7 @@ import { CallService } from "./services/calls";
 import { PhoneNumberService } from "./services/phone-numbers";
 
 export interface ApiV1Dependencies {
+  openings?: import("../../speech/preparation").OpeningPreparation;
   db: Db;
   authDb?: Db;
   redis: Redis;
@@ -70,6 +71,7 @@ export const createApiV1 = async (deps: ApiV1Dependencies): Promise<ApiV1> => {
     return missing.length ? { state: "misconfigured", message: missing.join(", ") } : { state: "ready" };
   };
   const launcher = new CallLauncher({
+    openings: deps.openings,
     telephony: deps.telephony,
     contexts: deps.contexts,
     registry: deps.registry,
