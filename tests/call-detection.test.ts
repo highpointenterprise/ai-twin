@@ -124,3 +124,62 @@ test("session rejects hallucinated DTMF during human conversation", async (t) =>
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(executed, 0);
 });
+
+test("human pickup interrupts voicemail even with a one-word hello", async (t) => {
+  const h = harness({ direction: "outbound", agent: configured() });
+  t.after(() => h.session.close());
+  h.setAutoMark(false);
+  await tick();
+  h.events.onEnd("Please leave a message after the beep");
+  h.session.pushAudio(beepAudio().toString("base64"));
+  await until(() => h.sent.some((m: any) => m.event === "mark"));
+  const mark = (h.sent.find((m: any) => m.event === "mark") as any).mark.name;
+  h.events.onEnd("Hello?");
+  h.session.handleMark(mark);
+  await until(() => h.spoken.length === 2);
+  assert.equal(h.ended.length, 0);
+  assert.ok(h.sent.some((m: any) => m.event === "clear"));
+});
+
+test("fragmented menus preserve earlier options until a quiet final turn", () => {
+  const h = new CallHandling(configured(), trace, true, true, 0);
+  h.observe("Press one for sales", true, 100);
+  h.speechStart(150);
+  assert.equal(h.tick(600).action, "none");
+  h.observe("press two for support", true, 700);
+  const menu = h.tick(900);
+  assert.equal(menu.action, "menu");
+  assert.match(menu.text!, /one for sales.*two for support/);
+});
+
+test("repeated menus and missing DTMF tools terminate without arbitrary selections", () => {
+  const h = new CallHandling(configured(), trace, true, true, 0);
+  for (let i = 0; i < 2; i++) {
+    h.observe("Press 1 for sales", true, i * 1000);
+    h.tick(i * 1000 + 200);
+    assert.equal(h.beginDtmf(i * 1000 + 200), undefined);
+  }
+  h.observe("Press 1 for sales", true, 3000);
+  h.tick(3200);
+  assert.match(h.beginDtmf(3200)!, /limit/);
+  const noTool = new CallHandling(configured(), trace, true, false, 0);
+  noTool.observe("Press one for sales", true, 100);
+  assert.equal(noTool.tick(400).action, "none");
+  assert.equal(noTool.tick(5200).reason, "ivr-timeout");
+});
+
+test("late greeting transcripts cannot interrupt a voicemail message already playing", async (t) => {
+  const h = harness({ direction: "outbound", agent: configured() });
+  t.after(() => h.session.close());
+  h.setAutoMark(false);
+  await tick();
+  h.events.onPartial("Please leave a message after the beep");
+  h.session.pushAudio(beepAudio().toString("base64"));
+  await until(() => h.sent.some((m: any) => m.event === "mark"));
+  h.events.onPartial("Please leave a message after the beep");
+  h.events.onEnd("Please leave a message after the beep");
+  h.events.onEnd("Thank you for calling");
+  assert.equal(h.sent.some((m: any) => m.event === "clear"), false);
+  h.session.handleMark((h.sent.find((m: any) => m.event === "mark") as any).mark.name);
+  await until(() => h.ended.includes("voicemail"));
+});

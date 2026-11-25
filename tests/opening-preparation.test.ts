@@ -92,3 +92,55 @@ test("preparation skips waiting/generated modes and scopes cached audio by assis
   cache.set("huge", ["x".repeat(100)]);
   assert.equal(cache.get("huge"), undefined);
 });
+
+test("an interrupted pending opening closes its provider and never leaks late audio", async (t) => {
+  const a = fixed();
+  let emit!: (audio: string) => void, close = 0;
+  const preparation = new PreparedOpening(a, (_voice, audio) => {
+    emit = audio;
+    return { push: async () => {}, end: () => new Promise(() => {}), close: () => { close++; } };
+  });
+  const h = harness({ agent: a, direction: "outbound", preparedOpening: preparation });
+  t.after(() => h.session.close());
+  await tick();
+  h.events.onPartial("Wait stop");
+  await assert.rejects(preparation.done);
+  emit(Buffer.alloc(160, 255).toString("base64"));
+  await tick();
+  assert.equal(close, 1);
+  assert.equal(h.sent.some((m: any) => m.event === "media"), false);
+});
+
+test("failed or unanswered calls release preparation capacity and preserve their usage", async () => {
+  let connected = 0;
+  const prep = new OpeningPreparation((_v, _audio, voice, _format, trace) => {
+    connected++;
+    return { push: async text => { trace?.usage?.addTts(voice!.model, text.length); }, end: () => new Promise(() => {}), close: () => {} };
+  }, 1);
+  const a = fixed(), trace = new CallTrace("failed-call");
+  prep.start("first", a);
+  prep.bind("first", "failed-call", trace);
+  prep.start("blocked", fixed());
+  assert.equal(connected, 1);
+  prep.cancelCall("failed-call");
+  prep.start("next", fixed());
+  assert.equal(connected, 2);
+  assert.equal(trace.usage.snapshot().voice[0].characters, a.firstMessage.length);
+  prep.close();
+});
+
+test("normal conversation still overlaps the voice handshake with model generation", async (t) => {
+  let voiceConnected = false;
+  const h = harness({}, {
+    synthesize: (_v, audio) => {
+      voiceConnected = true;
+      return { push: async () => audio(Buffer.alloc(160, 255).toString("base64")), end: async () => {}, close: () => {} };
+    },
+    model: { async *stream() { assert.equal(voiceConnected, true); yield { type: "text", text: "Hello again." }; }, complete: async () => "" },
+  });
+  t.after(() => h.session.close());
+  await tick();
+  assert.equal(voiceConnected, false);
+  h.events.onEnd("Hello?");
+  await until(() => h.sent.some((m: any) => m.event === "media"));
+});
