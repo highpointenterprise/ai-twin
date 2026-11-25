@@ -6,7 +6,11 @@ import type {
   SynthesizerFactory,
 } from "../core/ports";
 import { errorDetail } from "../observability/diagnostics";
-import { speechCache as sharedCache, speechCacheKey, type PreparedOpening } from "./preparation";
+import {
+  speechCache as sharedCache,
+  speechCacheKey,
+  type PreparedOpening,
+} from "./preparation";
 import { base64ByteLength } from "./audio";
 import { TurnGate } from "./gate";
 import { delay } from "./timing";
@@ -80,7 +84,9 @@ export class SpeechStream {
     this.spokenText += (this.spokenText ? " " : "") + text.trim();
     if (this.cacheHit) return;
     if (this.options.prepared?.usable) {
-      this.unsubscribe ??= this.options.prepared.subscribe((payload) => this.receive(payload));
+      this.unsubscribe ??= this.options.prepared.subscribe((payload) =>
+        this.receive(payload),
+      );
       return;
     }
     this.synth ??= this.createSynthesizer();
@@ -88,7 +94,8 @@ export class SpeechStream {
     this.pushChain = this.pushChain
       .then(() => synth.push(text))
       .catch((error: unknown) => {
-        this.failure ??= error instanceof Error ? error : new Error("TTS failed");
+        this.failure ??=
+          error instanceof Error ? error : new Error("TTS failed");
       });
   }
 
@@ -316,7 +323,8 @@ export class SpeechOutput {
           if (sent) this.clear();
         },
         streamOpened: () => void this.activeStreams++,
-        streamClosed: () => void (this.activeStreams = Math.max(0, this.activeStreams - 1)),
+        streamClosed: () =>
+          void (this.activeStreams = Math.max(0, this.activeStreams - 1)),
       },
       signal,
       options,
@@ -337,16 +345,27 @@ export class SpeechOutput {
     const stream = this.open(signal, {
       floorMs: waitMs,
       cacheKey: cache ? this.cacheKey(text) : undefined,
-      prepared: cache && this.init.preparedOpening?.key === this.cacheKey(text)
-        ? this.init.preparedOpening : undefined,
+      prepared:
+        cache && this.init.preparedOpening?.key === this.cacheKey(text)
+          ? this.init.preparedOpening
+          : undefined,
     });
     stream.write(text);
     try {
       await stream.finish();
     } catch (error) {
-      if (!signal.aborted && cache && this.init.preparedOpening && !this.init.preparedOpening.usable && !stream.firstAudioAt) {
+      if (
+        !signal.aborted &&
+        cache &&
+        this.init.preparedOpening &&
+        !this.init.preparedOpening.usable &&
+        !stream.firstAudioAt
+      ) {
         this.init.trace.log("opening.preparation_fallback");
-        const retry = this.open(signal, { floorMs: waitMs, cacheKey: this.cacheKey(text) });
+        const retry = this.open(signal, {
+          floorMs: waitMs,
+          cacheKey: this.cacheKey(text),
+        });
         retry.write(text);
         await retry.finish();
       } else throw error;

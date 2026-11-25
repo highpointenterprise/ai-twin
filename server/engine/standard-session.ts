@@ -1,4 +1,8 @@
-import { callHandlingSchema, screeningSchema, voicemailSchema } from "../../lib/config";
+import {
+  callHandlingSchema,
+  screeningSchema,
+  voicemailSchema,
+} from "../../lib/config";
 import { randomUUID } from "node:crypto";
 import type {
   ChatMessage,
@@ -46,7 +50,11 @@ export class StandardSession implements ConversationSession {
   private readonly deadline: number;
   private readonly durationTimer: NodeJS.Timeout;
   private readonly executed = new Map<string, unknown>();
-  private speculation?: { text: string; gate: TurnGate; controller: AbortController };
+  private speculation?: {
+    text: string;
+    gate: TurnGate;
+    controller: AbortController;
+  };
   private pendingHold?: { text: string; timer: NodeJS.Timeout };
   private carry = "";
   private eotAt = 0;
@@ -56,7 +64,17 @@ export class StandardSession implements ConversationSession {
     private readonly init: SessionInit,
     private readonly deps: EngineDeps,
   ) {
-    init = { ...init, agent: { ...init.agent, callHandling: callHandlingSchema.parse(init.agent.callHandling ?? {}), callScreening: screeningSchema.parse(init.agent.callScreening ?? {}), voicemailDetection: voicemailSchema.parse(init.agent.voicemailDetection ?? {}) } };
+    init = {
+      ...init,
+      agent: {
+        ...init.agent,
+        callHandling: callHandlingSchema.parse(init.agent.callHandling ?? {}),
+        callScreening: screeningSchema.parse(init.agent.callScreening ?? {}),
+        voicemailDetection: voicemailSchema.parse(
+          init.agent.voicemailDetection ?? {},
+        ),
+      },
+    };
     this.init = init;
     init.trace.log("session.initializing", {
       agentId: init.agent.id,
@@ -72,9 +90,19 @@ export class StandardSession implements ConversationSession {
     this.deadline =
       init.deadline ?? Date.now() + init.agent.maxDurationSeconds * 1000;
     this.output = new SpeechOutput(init, deps.synthesize);
-    this.handling = new CallHandling(init.agent, init.trace, init.direction === "outbound", (init.tools ?? []).some((tool) => tool.type === "dtmf"), Date.now(), !init.purpose || init.purpose === "conversation");
+    this.handling = new CallHandling(
+      init.agent,
+      init.trace,
+      init.direction === "outbound",
+      (init.tools ?? []).some((tool) => tool.type === "dtmf"),
+      Date.now(),
+      !init.purpose || init.purpose === "conversation",
+    );
     this.beep = new BeepDetector(init.inputAudioFormat);
-    this.handlingTimer = setInterval(() => this.handleDecision(this.handling.tick()), 100);
+    this.handlingTimer = setInterval(
+      () => this.handleDecision(this.handling.tick()),
+      100,
+    );
     this.handlingTimer.unref();
     this.durationTimer = setTimeout(
       () => void this.end("max-duration"),
@@ -86,7 +114,10 @@ export class StandardSession implements ConversationSession {
           onSpeechStart: () => {
             init.trace.log("stt.speech_started");
             this.handling.speechStart();
-            if (this.menuPending) { this.interrupt(); this.menuPending = false; }
+            if (this.menuPending) {
+              this.interrupt();
+              this.menuPending = false;
+            }
             this.voicedMs = 0;
             this.resumeHeldTurn();
             if (this.speculating) this.cancelSpeculation();
@@ -173,7 +204,12 @@ export class StandardSession implements ConversationSession {
     };
     const voiced = audioRms(chunk, format.encoding) > 600;
     this.handling.audio(voiced);
-    if (this.init.direction === "outbound" && this.init.agent.voicemailDetection.enabled && (this.handling.awaitingBeep || this.handling.state === "unknown") && this.beep.push(chunk)) {
+    if (
+      this.init.direction === "outbound" &&
+      this.init.agent.voicemailDetection.enabled &&
+      (this.handling.awaitingBeep || this.handling.state === "unknown") &&
+      this.beep.push(chunk)
+    ) {
       this.init.trace.log("call.beep_detected");
       this.handleDecision(this.handling.beep());
     }
@@ -227,8 +263,10 @@ export class StandardSession implements ConversationSession {
   }
 
   private lastAgentText(): string {
-    return this.history.findLast((m) => m.role === "assistant" && m.content)
-      ?.content ?? "";
+    return (
+      this.history.findLast((m) => m.role === "assistant" && m.content)
+        ?.content ?? ""
+    );
   }
 
   private speculationBlocker(draft: string): string | undefined {
@@ -242,7 +280,10 @@ export class StandardSession implements ConversationSession {
     if (this.init.purpose && this.init.purpose !== "conversation")
       return "purpose";
     if (this.init.endAfterFirstMessage) return "fallback-session";
-    if ((this.init.tools ?? []).some((t) => t.type === "dtmf") && isIvrMenu(draft))
+    if (
+      (this.init.tools ?? []).some((t) => t.type === "dtmf") &&
+      isIvrMenu(draft)
+    )
       return "ivr-menu";
     if (Date.now() < this.backoffUntil) return "backoff";
     if (
@@ -313,7 +354,9 @@ export class StandardSession implements ConversationSession {
     const merged = this.carry ? `${this.carry} ${text}` : text;
     const continued = merged !== text;
     this.carry = "";
-    const hold = continued ? 0 : continuationHoldMs(merged, this.lastAgentText());
+    const hold = continued
+      ? 0
+      : continuationHoldMs(merged, this.lastAgentText());
     if (hold > 0) {
       this.init.trace.log("turn.hold", { ms: hold });
       this.pendingHold = {
@@ -358,10 +401,18 @@ export class StandardSession implements ConversationSession {
     });
   }
 
-  private handleDecision(decision: HandlingResult, text = decision.text ?? ""): void {
+  private handleDecision(
+    decision: HandlingResult,
+    text = decision.text ?? "",
+  ): void {
     if (this.closed || this.ending || decision.action === "none") return;
-    if (this.handling.screeningEncountered) this.deps.onScreening?.(this.init.callSid);
-    if (decision.action === "hangup") { this.interrupt(); void this.end(decision.reason ?? "answer-detection-ended"); return; }
+    if (this.handling.screeningEncountered)
+      this.deps.onScreening?.(this.init.callSid);
+    if (decision.action === "hangup") {
+      this.interrupt();
+      void this.end(decision.reason ?? "answer-detection-ended");
+      return;
+    }
     if (decision.action === "wait") {
       if (this.speculating) this.cancelSpeculation();
       this.interrupt();
@@ -380,13 +431,19 @@ export class StandardSession implements ConversationSession {
     } else if (decision.action === "leave-message") {
       this.menuPending = false;
       this.run(async (signal) => {
-        await this.speak(this.init.agent.voicemailDetection.message, signal, true);
+        await this.speak(
+          this.init.agent.voicemailDetection.message,
+          signal,
+          true,
+        );
         signal.throwIfAborted();
         await this.end("voicemail");
       });
     } else if (decision.action === "menu") {
       this.menuPending = true;
-      this.init.trace.log("ivr.menu_ready", { elapsedMs: Date.now() - this.began });
+      this.init.trace.log("ivr.menu_ready", {
+        elapsedMs: Date.now() - this.began,
+      });
       this.commit(text);
     } else if (decision.action === "conversation" && text) {
       this.menuPending = false;
@@ -417,7 +474,8 @@ export class StandardSession implements ConversationSession {
         }
         this.init.trace.log("turn.failed", errorDetail(error));
         if (this.handling.automated) {
-          if (this.handling.state === "voicemail-speaking") await this.end("speech-provider-error");
+          if (this.handling.state === "voicemail-speaking")
+            await this.end("speech-provider-error");
           return;
         }
         if (this.init.purpose === "warm-consultation") {
@@ -557,14 +615,17 @@ export class StandardSession implements ConversationSession {
     const tools = this.init.tools ?? [];
     const buffered =
       allowTools &&
-      tools.some((t) => t.type === "transferCall" && t.routingMode === "phrase");
+      tools.some(
+        (t) => t.type === "transferCall" && t.routingMode === "phrase",
+      );
     for (let round = 0; round < 6; round++) {
       signal.throwIfAborted();
       this.trimHistory();
       const gate = round === 0 && turnGate ? turnGate : TurnGate.open();
 
       const hasDtmf = tools.some((t) => t.type === "dtmf");
-      const ivrTurn = allowTools && hasDtmf && this.handling.state.startsWith("ivr");
+      const ivrTurn =
+        allowTools && hasDtmf && this.handling.state.startsWith("ivr");
       const ivrRule = hasDtmf
         ? "\n" +
           IVR_RULES +
@@ -629,7 +690,8 @@ export class StandardSession implements ConversationSession {
           } else calls.push(delta.call);
         }
         signal.throwIfAborted();
-        if (streaming) for (const segment of segmenter.flush()) stream.write(segment);
+        if (streaming)
+          for (const segment of segmenter.flush()) stream.write(segment);
         this.init.trace.log("llm.completed", {
           ms: Date.now() - began,
           characters: text.length,
@@ -671,7 +733,11 @@ export class StandardSession implements ConversationSession {
           throw new Error("Tools cannot execute during the opening.");
         toolRound = true;
         await gate.until(signal);
-        this.history.push({ role: "assistant", content: text, toolCalls: calls });
+        this.history.push({
+          role: "assistant",
+          content: text,
+          toolCalls: calls,
+        });
         if (calls.length > 1) {
           for (const call of calls)
             this.history.push({
@@ -725,14 +791,24 @@ export class StandardSession implements ConversationSession {
         const denied = this.handling.beginDtmf();
         if (denied) {
           this.init.trace.log("ivr.selection_blocked", { reason: denied });
-          if (denied === "IVR selection limit reached.") await this.end("ivr-navigation-limit");
-          this.history.push({ role: "tool", toolCallId: call.id, content: JSON.stringify({ error: denied }) });
+          if (denied === "IVR selection limit reached.")
+            await this.end("ivr-navigation-limit");
+          this.history.push({
+            role: "tool",
+            toolCallId: call.id,
+            content: JSON.stringify({ error: denied }),
+          });
           return { waitForUser: true };
         }
-        this.init.trace.log("dtmf.sending", { transport: this.init.sendDtmf ? "out-of-band" : "in-band" });
+        this.init.trace.log("dtmf.sending", {
+          transport: this.init.sendDtmf ? "out-of-band" : "in-band",
+        });
       }
       if (this.executed.has(call.id))
-        outcome = { result: this.executed.get(call.id), ...(tool.type === "dtmf" ? { waitForUser: true } : {}) };
+        outcome = {
+          result: this.executed.get(call.id),
+          ...(tool.type === "dtmf" ? { waitForUser: true } : {}),
+        };
       else {
         this.init.trace.log("tool.started", {
           tool: tool.name,
@@ -756,7 +832,10 @@ export class StandardSession implements ConversationSession {
             if (text) this.init.trace.say("agent", text);
           },
           playAudio: (audio) => this.output.play(audio, signal),
-          sendDtmf: this.init.sendDtmf ? (keys, duration, gap) => this.init.sendDtmf!(keys, duration, gap, signal) : undefined,
+          sendDtmf: this.init.sendDtmf
+            ? (keys, duration, gap) =>
+                this.init.sendDtmf!(keys, duration, gap, signal)
+            : undefined,
         });
         this.executed.set(call.id, outcome.result);
       }

@@ -16,10 +16,7 @@ import { ToolRegistry } from "../server/tools/registry";
 import { SessionPool } from "../server/engine/pool";
 import { TraceStore } from "../server/observability/trace";
 import { StandardSession } from "../server/engine/standard-session";
-import {
-  createPublicApp,
-  type HttpDeps,
-} from "../server/http/routes";
+import { createPublicApp, type HttpDeps } from "../server/http/routes";
 import { attachMediaServer } from "../server/http/media";
 import { createTwilioTelephony } from "../server/providers/twilio";
 import { elevenLabsSynthesizerFactory } from "../server/providers/elevenlabs";
@@ -79,18 +76,21 @@ for (const direction of ["inbound", "outbound"] as const)
     );
     let openingRequests = 0;
     const synthesize = elevenLabsSynthesizerFactory((url) => {
-            assert.match(url, /server-voice/);
-            assert.equal(
-              new URL(url).searchParams.get("output_format"),
-              "ulaw_8000",
-            );
-            return new WebSocket(
-              `ws://127.0.0.1:${(el.address() as AddressInfo).port}`,
-            );
-          });
-    const openings = new OpeningPreparation((...args) => { openingRequests++; return synthesize(...args); });
+      assert.match(url, /server-voice/);
+      assert.equal(new URL(url).searchParams.get("output_format"), "ulaw_8000");
+      return new WebSocket(
+        `ws://127.0.0.1:${(el.address() as AddressInfo).port}`,
+      );
+    });
+    const openings = new OpeningPreparation((...args) => {
+      openingRequests++;
+      return synthesize(...args);
+    });
     t.after(() => openings.close());
-    const d: Omit<HttpDeps, "store" | "tools"> & { store: AgentStore; tools: ToolRegistry } = {
+    const d: Omit<HttpDeps, "store" | "tools"> & {
+      store: AgentStore;
+      tools: ToolRegistry;
+    } = {
       store: new AgentStore(
         agent({
           voiceId: "",
@@ -108,10 +108,12 @@ for (const direction of ["inbound", "outbound"] as const)
       telephony: telephony(),
       listVoices: async () => [],
       pendingCalls: 0,
-      recordings: { prepare: async (callSid: string) => {
-        assert.equal(callSid, `CA-${direction}`);
-        return true;
-      } } as unknown as CallRecordings,
+      recordings: {
+        prepare: async (callSid: string) => {
+          assert.equal(callSid, `CA-${direction}`);
+          return true;
+        },
+      } as unknown as CallRecordings,
     };
     const real = createTwilioTelephony(),
       sid = `CA-${direction}`;
@@ -124,7 +126,11 @@ for (const direction of ["inbound", "outbound"] as const)
         { sid: "PN-test", phoneNumber: "+14155550100", label: "Test" },
       ],
       placeCall: async (request) => {
-        assert.equal(openingRequests, 1, "Opening preparation starts before dialing");
+        assert.equal(
+          openingRequests,
+          1,
+          "Opening preparation starts before dialing",
+        );
         outboundUrl = request.url;
         return sid;
       },
@@ -135,21 +141,24 @@ for (const direction of ["inbound", "outbound"] as const)
     const media = attachMediaServer(publicServer, {
       ...d,
       factory: (init) =>
-        new StandardSession({ ...init, preparedOpening: openings.take(init.callSid) }, {
-          transcribe: deepgramTranscriberFactory((url) => {
-            assert.equal(new URL(url).searchParams.get("encoding"), "mulaw");
-            return new WebSocket(
-              `ws://127.0.0.1:${(dg.address() as AddressInfo).port}`,
-            );
-          }),
-          synthesize,
-          model: {
-            async *stream() {
-              yield { type: "text", text: "We are open until five." };
+        new StandardSession(
+          { ...init, preparedOpening: openings.take(init.callSid) },
+          {
+            transcribe: deepgramTranscriberFactory((url) => {
+              assert.equal(new URL(url).searchParams.get("encoding"), "mulaw");
+              return new WebSocket(
+                `ws://127.0.0.1:${(dg.address() as AddressInfo).port}`,
+              );
+            }),
+            synthesize,
+            model: {
+              async *stream() {
+                yield { type: "text", text: "We are open until five." };
+              },
+              complete: async () => "",
             },
-            complete: async () => "",
           },
-        }),
+        ),
     });
     publicServer.listen(0, "127.0.0.1");
     await Promise.all([
@@ -202,7 +211,10 @@ for (const direction of ["inbound", "outbound"] as const)
     const xml = await response.text();
     assert.match(xml, /<Start><Recording channels="dual" track="both"/);
     assert.ok(xml.indexOf("<Recording") < xml.indexOf("<Connect>"));
-    assert.match(xml, /recordingStatusCallback="https:\/\/test.ngrok.app\/twilio\/recording-status"/);
+    assert.match(
+      xml,
+      /recordingStatusCallback="https:\/\/test.ngrok.app\/twilio\/recording-status"/,
+    );
     assert.match(
       xml,
       /statusCallback="https:\/\/test.ngrok.app\/twilio\/stream-status"/,
