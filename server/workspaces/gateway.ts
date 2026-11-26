@@ -28,10 +28,11 @@ function proxy(req: IncomingMessage, res: ServerResponse, port: number, path: st
 }
 
 export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: WorkspaceResolver, directory?: ApiKeyDirectory, mail?: MailQueue) {
+  const health = () => ({ status: "ok", ...(process.env.APP_REVISION ? { revision: process.env.APP_REVISION } : {}) });
   const admin = express();
   admin.set("trust proxy", env.TRUST_PROXY_HOPS);
   admin.disable("x-powered-by");
-  admin.get("/health", (_req, res) => res.json({ status: "ok" }));
+  admin.get("/health", (_req, res) => res.set("cache-control", "no-store").json(health()));
   admin.use("/api/v1/auth", createAuthRouter(auth, secret, mail));
   admin.use(requireUser(auth));
   admin.use(async (req, res) => {
@@ -45,7 +46,7 @@ export function createWorkspaceGateway(auth: AuthStore, secret: string, pool: Wo
   const publicApp = express();
   publicApp.set("trust proxy", env.TRUST_PROXY_HOPS);
   publicApp.disable("x-powered-by");
-  publicApp.get("/health", (_req, res) => res.json({ status: "ok" }));
+  publicApp.get("/health", (_req, res) => res.set("cache-control", "no-store").json(health()));
   const apiPaths = ["/create-call", "/call", "/assistant", "/phone-number", "/v2/phone-number", "/tool"];
   publicApp.use(apiPaths, requestContext, asyncRoute(async (req, res) => {
     const token = bearerToken(req.get("authorization"));

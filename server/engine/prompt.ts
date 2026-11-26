@@ -46,6 +46,7 @@ export const IVR_RULES = [
   "Let the whole menu finish, then call the attached keypad tool once with the key that best matches the call objective.",
   "If no option matches, press the key for an operator, representative, or the closest department. If the menu is incomplete or only offers to repeat, stay silent and wait.",
   "After pressing a key, say nothing until you hear the next prompt or a live person.",
+  "A voicemail recording invitation is not a department menu. Do not select optional callback-number, review-message, or more-options keys just because they are offered. Follow the configured voicemail action.",
   "Speak only when a live human answers.",
 ].join(" ");
 

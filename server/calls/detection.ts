@@ -43,6 +43,17 @@ const holdCue =
   /\b(?:please (?:hold|wait)|one moment|try to connect|connect(?:ing)? you|let.{0,20}know|stay on the line|please stand by|all (?:our )?(?:agents|representatives).{0,20}busy)\b/i;
 const humanCue =
   /^(?:(?:well|yes|okay)[,.! ]+)?(?:hello|hi|hey|yes\??$|how (?:can|may) I help|who(?:'s| is) (?:this|calling)|what.{0,15}calling|(?:this is |it's |it is )?[\p{L} '-]{1,35} speaking\b|I (?:need|want|can|am|was|would|don't|do not)|can (?:you|I)|sorry|thanks|thank you for (?:waiting|holding))/iu;
+const recordingInvitation = /\b(?:leave|record) (?:me |us |your |a |the )?(?:short |brief |voice )?message\b/i;
+const optionalMailboxMenu = /\b(?:more options|call\s?back number|(?:review|re-?record|delete|send|save) (?:your |the |this )?message|(?:finished|done) recording)\b/i;
+
+function directRecordingGreeting(value: string): boolean {
+  if (/^(?:can|could|would|did) you\b|\b(?:said|says|heard|mentioned|discuss|talk about).{0,80}(?:voicemail|leave|record|message|tone|beep)/i.test(value)) return false;
+  const instruction = value.split(/\b(?:when|once) you(?:'ve| have| are)? (?:finished|done)|\byou (?:may|can) hang up/i)[0];
+  return instruction.split(/[.!?]/).some(sentence =>
+    recordingInvitation.test(sentence) && /\b(?:after|at) (?:the )?(?:tone|beep)\b/i.test(sentence) &&
+    !(sentence.match(menuCue)?.length),
+  );
+}
 
 export function classifyAnswer(text: string, screening = false): Decision {
   const value = text.slice(-4000).trim();
@@ -57,6 +68,8 @@ export function classifyAnswer(text: string, screening = false): Decision {
       confidence: 0.98,
       evidence: "identity-and-purpose-prompt",
     };
+  if (directRecordingGreeting(value))
+    return { kind: "voicemail", confidence: 0.98, evidence: "recording-invitation-before-optional-menu" };
   if (menus && !/^(?:can|could|would) you\b/i.test(value))
     return {
       kind: "ivr",
@@ -220,6 +233,13 @@ export class CallHandling {
       this.screeningEncountered && this.state.startsWith("screening"),
     );
     if (
+      (this.state === "voicemail" || this.state === "voicemail-speaking") &&
+      decision.kind === "ivr" && optionalMailboxMenu.test(text)
+    ) {
+      this.trace.log("voicemail.optional_menu_ignored", { final, state: this.state, reason: "follow-configured-voicemail-action" });
+      return { action: this.state === "voicemail-speaking" ? "none" : "wait" };
+    }
+    if (
       this.state === "ivr" &&
       this.menuPrefix &&
       (decision.kind === "ivr" ||
@@ -340,6 +360,7 @@ export class CallHandling {
         !this.speaking &&
         now - this.lastVoiceAt >= this.agent.callHandling.menuSilenceMs
       ) {
+        this.trace.log("voicemail.beep_timeout", { action: "leave-message", quietMs: now - this.lastVoiceAt });
         this.transition(
           "voicemail-speaking",
           {
