@@ -36,6 +36,7 @@ const initial = (type: ToolInput["type"]): ToolInput =>
             "Navigate an IVR menu by sending keypad tones. Wait for the full menu before choosing.",
           toneDurationMs: 200,
           gapMs: 100,
+          transport: "provider",
         }
       : {
           type,
@@ -502,12 +503,19 @@ export function ToolEditor({
               </label>
             ))}
           </fieldset>
+          <label>
+            Keypad delivery
+            <select value={tool.transport ?? "provider"} onChange={(e) => setTool({ ...tool, transport: e.target.value as "provider" | "audio" })}>
+              <option value="provider">Phone provider (recommended)</option>
+              <option value="audio">Audio tones (compatibility mode)</option>
+            </select>
+          </label>
           <p className="hint">
-            Sends in-band keypad audio through Twilio. Supports 0–9, *, #, A–D;
-            w pauses 0.5 seconds and W pauses 1 second. Test recognition with
-            your target IVR.
+            Provider delivery sends keypad digits through Twilio and reconnects the assistant automatically.
+            Supports 0–9, *, #, A–D; w pauses 0.5 seconds and W pauses 1 second.
+            Call logs show provider acceptance, reconnection, and the next menu response.
           </p>
-          <div className="row">
+          {(tool.transport ?? "provider") === "audio" ? <div className="row">
             <label>
               Tone duration (ms)
               <input
@@ -532,7 +540,7 @@ export function ToolEditor({
                 }
               />
             </label>
-          </div>
+          </div> : <p className="hint">The phone provider controls tone timing. Playback alone cannot confirm the remote menu accepted a selection.</p>}
         </>
       )}
       {tool.type === "function" && (

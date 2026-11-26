@@ -43,6 +43,7 @@ export function attachMediaServer(
     traces: TraceStore;
     contexts: ContextStore;
     onResumed?: (transferId: string, sid: string) => void | Promise<void>;
+    onDtmfResumed?: (resume: NonNullable<import("../store/contexts").CallContext["dtmfResume"]>, sid: string) => void;
     callState?: RedisCallState;
     maxConcurrentCalls?: number;
     onStarted?: (sid: string) => Promise<void>;
@@ -53,6 +54,7 @@ export function attachMediaServer(
     path: "/media",
     maxPayload: 64 * 1024,
   });
+  const liveConnections = new Map<string, { contextId: string; close: () => Promise<void> }>();
   wss.on("connection", (socket) => {
     let session: ConversationSession | undefined;
     let sid = "",
@@ -82,14 +84,17 @@ export function attachMediaServer(
     let heartbeat: NodeJS.Timeout | undefined;
     let liveUpdate = Promise.resolve();
     let released = false;
+    let holdLease = false;
+    let currentContextId = "";
     let mediaBegan: number | undefined;
     const release = () => {
       released = true;
       clearInterval(heartbeat);
+      if (liveConnections.get(sid)?.contextId === currentContextId) liveConnections.delete(sid);
       if (leaseId && deps.callState) {
         const id = leaseId;
         leaseId = undefined;
-        void liveUpdate.catch(() => {}).then(async () => {
+        if (!holdLease) void liveUpdate.catch(() => {}).then(async () => {
           await deps.callState!.release(id);
           await deps.callState!.removeLiveCall(sid, id);
         }).catch((error) => log("media.lease_release_failed", errorDetail(error)));
@@ -129,14 +134,14 @@ export function attachMediaServer(
           const context = await deps.contexts.getAsync(p.callId);
           const reason = session
             ? "duplicate-start"
-            : deps.pool.isFull
-              ? "capacity"
               : !context
                 ? "context-missing-or-consumed"
                 : context.agent.id !== p.agentId
                   ? "assistant-mismatch"
                   : context.sid !== start.callSid
                     ? "call-sid-mismatch"
+                    : context.dtmfResume && context.dtmfResume.expiresAt <= Date.now()
+                      ? "dtmf-resume-expired"
                     : !verifyStreamToken(p.agentId, p.callId, p.token)
                       ? "invalid-stream-token"
                       : "";
@@ -149,14 +154,24 @@ export function attachMediaServer(
             socket.close(1008, "Rejected stream");
             return;
           }
-          if (deps.callState && !(await deps.callState.reserve(p.callId, deps.maxConcurrentCalls ?? env.MAX_CONCURRENT_CALLS))) {
+          const snapshot = await deps.contexts.takeAsync(p.callId, start.callSid);
+          if (!snapshot) { socket.close(1008, "Call context consumed"); return; }
+          const previous = liveConnections.get(start.callSid);
+          if (snapshot.dtmfResume && previous?.contextId === snapshot.dtmfResume.previousContextId)
+            await previous.close();
+          if (deps.pool.isFull || socket.readyState !== socket.OPEN) {
+            socket.close(1013, "Session unavailable");
+            return;
+          }
+          if (deps.callState && !(await deps.callState.reserve(p.callId, deps.maxConcurrentCalls ?? env.MAX_CONCURRENT_CALLS, 120_000, snapshot.dtmfResume?.previousContextId))) {
             socket.close(1013, "Concurrent call limit reached");
             return;
           }
-          const snapshot = await deps.contexts.takeAsync(p.callId, start.callSid);
-          if (snapshot) { leaseId = p.callId; sid = start.callSid; }
-          if (!snapshot || socket.readyState !== socket.OPEN || deps.pool.isFull) {
-            if (snapshot) release();
+          leaseId = p.callId;
+          sid = start.callSid;
+          currentContextId = p.callId;
+          if (socket.readyState !== socket.OPEN || deps.pool.isFull) {
+            release();
             socket.close(1008, "Call context consumed or session unavailable");
             return;
           }
@@ -164,6 +179,8 @@ export function attachMediaServer(
           released = false;
           const record = await deps.registry.load(sid);
           if (deps.registry.repository && !record) throw new Error("Call record is not available.");
+          if (snapshot.dtmfResume && record && ["completed", "failed"].includes(record.status))
+            throw new Error("Cannot resume an ended call.");
           // Each trace persists its own cumulative producer segment. A resumed
           // worker starts a new segment; restoring call totals here would bill
           // prior workers' usage again.
@@ -200,6 +217,8 @@ export function attachMediaServer(
           });
           session = deps.factory({
             ...snapshot,
+            mediaContextId: p.callId,
+            holdMediaLease: (hold) => { holdLease = hold; },
             callSid: sid,
             streamSid: start.streamSid,
             trace: deps.traces.for(sid),
@@ -235,6 +254,12 @@ export function attachMediaServer(
             },
           });
           deps.pool.add(session);
+          liveConnections.set(sid, { contextId: p.callId, close: async () => {
+            release();
+            socket.close(1000, "Provider keypad reconnect");
+            await liveUpdate.catch(() => {});
+          } });
+          if (snapshot.dtmfResume) deps.onDtmfResumed?.(snapshot.dtmfResume, sid);
           if (snapshot.resumeTransferId)
             await deps.onResumed?.(snapshot.resumeTransferId, sid);
           if (released || socket.readyState !== socket.OPEN) { release(); return; }

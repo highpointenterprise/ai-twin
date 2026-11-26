@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentConfig } from "../../lib/types";
 import type { ProviderTrace } from "../core/ports";
 
@@ -22,6 +23,17 @@ export interface HandlingResult {
   reason?: string;
   text?: string;
 }
+export interface DtmfCheckpoint {
+  started: number;
+  selections: number;
+  menus: [string, number][];
+  lastMenu: string;
+  screeningEncountered: boolean;
+  replies: number;
+}
+const menuFingerprint = (text: string) => createHash("sha256")
+  .update(text.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim())
+  .digest("hex");
 
 const menuCue =
   /\b(?:press|dial|enter|select)\s+(?:\d|zero|one|two|three|four|five|six|seven|eight|nine|pound|star|hash|your (?:extension|account|pin))\b/gi;
@@ -113,7 +125,7 @@ export class CallHandling {
   state: HandlingState = "unknown";
   screeningEncountered = false;
   private stateSince: number;
-  private readonly started: number;
+  private started: number;
   private initialResolved = false;
   private replies = 0;
   private selections = 0;
@@ -127,6 +139,8 @@ export class CallHandling {
   private lastUnknown = "";
   private lastBeepAt = -Infinity;
   private lastDecision = "";
+  private lastSelectionMenu = "";
+  private awaitingDtmfResponse = false;
 
   constructor(
     private readonly agent: AgentConfig,
@@ -140,6 +154,26 @@ export class CallHandling {
   }
   get sendingDtmf(): boolean {
     return this.dtmfInFlight;
+  }
+  checkpoint(): DtmfCheckpoint {
+    return {
+      started: this.started, selections: this.selections, menus: [...this.menus],
+      lastMenu: this.lastSelectionMenu, screeningEncountered: this.screeningEncountered,
+      replies: this.replies,
+    };
+  }
+  resume(checkpoint: DtmfCheckpoint, now = Date.now()): void {
+    this.started = checkpoint.started;
+    this.selections = checkpoint.selections;
+    this.replies = checkpoint.replies;
+    this.screeningEncountered = checkpoint.screeningEncountered;
+    for (const [key, count] of checkpoint.menus) this.menus.set(key, count);
+    this.lastSelectionMenu = checkpoint.lastMenu;
+    this.awaitingDtmfResponse = true;
+    this.initialResolved = true;
+    this.state = "ivr-wait";
+    this.stateSince = now;
+    this.trace.log("ivr.resumed", { selections: this.selections, rememberedMenus: this.menus.size });
   }
   get automated(): boolean {
     return !["unknown", "human"].includes(this.state);
@@ -250,6 +284,10 @@ export class CallHandling {
           action: this.state === "voicemail-speaking" ? "none" : "wait",
         };
       this.initialResolved = true;
+      if (this.awaitingDtmfResponse) {
+        this.trace.log("dtmf.remote_response", { observation: "human-greeting", remoteRecognition: "inferred-from-speech" });
+        this.awaitingDtmfResponse = false;
+      }
       this.transition("human", decision, now);
       this.menuFinalAt = undefined;
       return { action: "conversation" };
@@ -282,6 +320,14 @@ export class CallHandling {
     ) {
       this.menuFinalAt = undefined;
       this.stateSince = now;
+      if (this.awaitingDtmfResponse) {
+        const fingerprint = menuFingerprint(this.menuText);
+        this.trace.log("dtmf.remote_response", {
+          observation: fingerprint === this.lastSelectionMenu ? "same-menu-repeated" : "different-menu-heard",
+          menuFingerprint: fingerprint.slice(0, 16), remoteRecognition: "unconfirmed",
+        });
+        this.awaitingDtmfResponse = false;
+      }
       return { action: "menu", text: this.menuText };
     }
     if (
@@ -341,17 +387,14 @@ export class CallHandling {
     return { action: "none" };
   }
   beginDtmf(now = Date.now()): string | undefined {
+    if (this.dtmfInFlight) return "A keypad operation is already in progress.";
     if (
       this.state !== "ivr" ||
       this.speaking ||
       now - this.lastVoiceAt < this.agent.callHandling.menuSilenceMs
     )
       return "Wait for a complete, quiet phone menu before sending keypad tones.";
-    const key = this.menuText
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    const key = menuFingerprint(this.menuText);
     const repeats = this.menus.get(key) ?? 0;
     if (
       this.selections >= this.agent.callHandling.maxMenuSelections ||
@@ -362,9 +405,15 @@ export class CallHandling {
     this.dtmfInFlight = true;
     this.selections++;
     this.menus.set(key, repeats + 1);
+    this.lastSelectionMenu = key;
+    this.awaitingDtmfResponse = true;
+    this.trace.log("dtmf.menu_selection", {
+      selectionNumber: this.selections, repeatedMenuAttempt: repeats + 1,
+      menuFingerprint: key.slice(0, 16), quietMs: now - this.lastVoiceAt,
+    });
     this.transition(
       "ivr-wait",
-      { kind: "ivr", confidence: 1, evidence: "keypad-selection-sent" },
+      { kind: "ivr", confidence: 1, evidence: "keypad-selection-requested" },
       now,
     );
     return undefined;

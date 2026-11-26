@@ -137,7 +137,8 @@ test("multi-menu navigation waits for final and quiet audio, bounds retries and 
   assert.equal(h.tick(999).action, "none");
   assert.equal(h.tick(1000).action, "menu");
   assert.equal(h.beginDtmf(1000), undefined);
-  assert.match(h.beginDtmf(1100)!, /complete/);
+  assert.match(h.beginDtmf(1100)!, /already in progress/);
+  h.dtmfCompleted(1150);
   h.observe("Press 3 for appointments", true, 1200);
   assert.equal(h.tick(1400).action, "menu");
   assert.equal(h.beginDtmf(1400), undefined);
@@ -259,6 +260,7 @@ test("repeated menus and missing DTMF tools terminate without arbitrary selectio
     h.observe("Press 1 for sales", true, i * 1000);
     h.tick(i * 1000 + 200);
     assert.equal(h.beginDtmf(i * 1000 + 200), undefined);
+    h.dtmfCompleted(i * 1000 + 400);
   }
   h.observe("Press 1 for sales", true, 3000);
   h.tick(3200);

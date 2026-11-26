@@ -218,6 +218,7 @@ export const toolSchema = z
     z.object({
       ...toolBase,
       type: z.literal("dtmf"),
+      transport: z.enum(["provider", "audio"]).optional(),
       navigation: dtmfNavigationSchema.optional(),
       toneDurationMs: z.number().int().min(100).max(1000).default(200),
       gapMs: z.number().int().min(50).max(1000).default(100),

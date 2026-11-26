@@ -52,6 +52,7 @@ import {
   type TwilioSettings,
 } from "../providers/twilio-settings";
 export interface HttpDeps {
+  dtmf?: import("../dtmf/service").DtmfService;
   openings?: import("../speech/preparation").OpeningPreparation;
   store: AgentRepository;
   registry: CallRegistry;
@@ -1042,6 +1043,7 @@ export const createPublicApp = (d: HttpDeps): Express => {
             : "",
       });
       if (status === "completed" || status === "failed") {
+        await d.dtmf?.callerEnded(b.CallSid);
         d.openings?.cancelCall(b.CallSid);
         if (typeof req.query.callId === "string")
           await d.callState?.release(req.query.callId);

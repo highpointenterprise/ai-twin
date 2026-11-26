@@ -14,6 +14,7 @@ export class ToolExecutor {
     private readonly telephony: Telephony,
     private readonly request: typeof fetch = fetch,
     private readonly warmTransfers?: WarmTransferCoordinator,
+    private readonly dtmf?: import("../dtmf/service").DtmfService,
   ) {}
   async execute(
     tool: ToolConfig,
@@ -61,12 +62,18 @@ export class ToolExecutor {
     if (tool.type === "dtmf") {
       if (typeof args.keys !== "string")
         throw new Error("DTMF keys are required.");
+      if (!/^[0-9A-D*#wW]{1,32}$/.test(args.keys) || !/[0-9A-D*#]/.test(args.keys))
+        throw new Error("Invalid DTMF sequence.");
+      if (!context.sendDtmf && tool.transport !== "audio") {
+        if (!this.dtmf) throw new Error("Provider keypad delivery is unavailable.");
+        return this.dtmf.send(call.id, args.keys, context);
+      }
       const audio = dtmfAudio(args.keys, tool.toneDurationMs, tool.gapMs);
       if (context.sendDtmf) await context.sendDtmf(args.keys, tool.toneDurationMs, tool.gapMs);
       else await context.playAudio(audio);
       return {
         waitForUser: true,
-        result: { status: "tones-played", keys: args.keys },
+        result: { status: "tones-played", remoteRecognition: "unconfirmed" },
       };
     }
     const validate = jsonValidator.compile(tool.parameters);
