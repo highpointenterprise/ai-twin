@@ -32,8 +32,10 @@ jobs:
       TEST_REDIS_URL: redis://127.0.0.1:6379
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "24"
           cache: npm
@@ -52,13 +54,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@61cd5800c18cd650d23785df9484e8ff76655acf
         with:
           role-to-assume: arn:aws:iam::816122929057:role/ai-twin-github-deploy
           role-session-name: github-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: "816122929057"
+          retry-max-attempts: 5
       - name: Build and push image
         id: image
         shell: bash
