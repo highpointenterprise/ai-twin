@@ -75,6 +75,8 @@ export interface ToolOutcome {
   waitForUser?: boolean;
 }
 export interface ConversationSnapshot {
+  mediaContextId?: string;
+  handling?: import("../calls/detection").DtmfCheckpoint;
   agent: AgentConfig;
   tools: ToolConfig[];
   brief: string;
@@ -83,6 +85,7 @@ export interface ConversationSnapshot {
   deadline: number;
 }
 export interface ToolContext {
+  handoff?: (pending: boolean) => void;
   sendDtmf?: (keys: string, durationMs: number, gapMs: number) => Promise<void>;
   usage?: UsageMeter;
   snapshot?: ConversationSnapshot;
@@ -154,6 +157,7 @@ export interface TelephonyNumber {
 }
 
 export interface Telephony {
+  sendDigits?: (sid: string, keys: string, wsUrl: string, params: Record<string, string>, statusUrl: string) => Promise<void>;
   listNumbers: () => Promise<TelephonyNumber[]>;
   routeInbound: (
     numberSid: string,
@@ -213,6 +217,9 @@ export interface ConversationSession {
 }
 
 export interface SessionInit {
+  mediaContextId?: string;
+  holdMediaLease?: (hold: boolean) => void;
+  dtmfResume?: import("../dtmf/service").DtmfResume;
   preparedOpening?: import("../speech/preparation").PreparedOpening;
   sendDtmf?: (keys: string, durationMs: number, gapMs: number, signal: AbortSignal) => Promise<void>;
   callSid: string;

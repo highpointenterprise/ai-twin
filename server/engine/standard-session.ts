@@ -43,6 +43,7 @@ export class StandardSession implements ConversationSession {
   private running: Promise<void> = Promise.resolve();
   private closed = false;
   private ending = false;
+  private dtmfHandoff = false;
   private backoffUntil = 0;
   private voicedMs = 0;
   private waitingForScreener = false;
@@ -107,6 +108,11 @@ export class StandardSession implements ConversationSession {
       outputFormat: init.outputAudioFormat?.encoding ?? "mulaw",
     });
     this.history.push(...structuredClone(init.history ?? []));
+    for (const message of this.history) {
+      if (message.role === "tool" && message.toolCallId) {
+        try { this.executed.set(message.toolCallId, JSON.parse(message.content)); } catch {}
+      }
+    }
     this.deadline =
       init.deadline ?? Date.now() + init.agent.maxDurationSeconds * 1000;
     this.output = new SpeechOutput(init, deps.synthesize);
@@ -118,9 +124,10 @@ export class StandardSession implements ConversationSession {
       Date.now(),
       !init.purpose || init.purpose === "conversation",
     );
+    if (init.dtmfResume) this.handling.resume(init.dtmfResume.handling);
     this.beep = new BeepDetector(init.inputAudioFormat);
     this.handlingTimer = setInterval(
-      () => this.handleDecision(this.handling.tick()),
+      () => { if (!this.dtmfHandoff) this.handleDecision(this.handling.tick()); },
       100,
     );
     this.handlingTimer.unref();
@@ -132,6 +139,7 @@ export class StandardSession implements ConversationSession {
       this.transcriber = deps.transcribe(
         {
           onSpeechStart: () => {
+            if (this.dtmfHandoff || this.closed) return;
             init.trace.log("stt.speech_started");
             this.handling.speechStart();
             if (this.menuPending) {
@@ -144,6 +152,7 @@ export class StandardSession implements ConversationSession {
             if (!this.turn) this.armIdle();
           },
           onPartial: (text) => {
+            if (this.dtmfHandoff || this.closed) return;
             const decision = this.handling.observe(text, false);
             this.handleDecision(decision);
             if (
@@ -156,6 +165,7 @@ export class StandardSession implements ConversationSession {
           },
           onEagerEnd: (text) => this.maybeSpeculate(text),
           onResume: () => {
+            if (this.dtmfHandoff || this.closed) return;
             init.trace.log("stt.turn_resumed");
             if (
               this.handling.state === "voicemail-speaking" ||
@@ -167,6 +177,7 @@ export class StandardSession implements ConversationSession {
           },
           onEnd: (text) => this.accept(text),
           onError: (error) => {
+            if (this.dtmfHandoff || this.closed) return;
             init.trace.log("stt.error", { message: error.message });
             void this.end("transcriber-error");
           },
@@ -220,7 +231,7 @@ export class StandardSession implements ConversationSession {
     );
   }
   pushAudio(payload: string): void {
-    if (this.closed || this.ending || this.init.endAfterFirstMessage) return;
+    if (this.closed || this.ending || this.dtmfHandoff || this.init.endAfterFirstMessage) return;
     const chunk = Buffer.from(payload, "base64");
     const format = this.init.inputAudioFormat ?? {
       encoding: "mulaw",
@@ -278,7 +289,7 @@ export class StandardSession implements ConversationSession {
     this.init.transportClose?.();
   }
   private interrupt(reason = "speech-detected"): void {
-    if (!this.turn || this.ending) return;
+    if (!this.turn || this.ending || this.dtmfHandoff) return;
     this.init.trace.log("barge_in", {
       reason,
       state: this.handling.state,
@@ -304,7 +315,7 @@ export class StandardSession implements ConversationSession {
     const { agent } = this.init;
     if (!draft) return "empty";
     if (!this.handling.canSpeculate) return "answer-classification";
-    if (this.closed || this.ending) return "closed";
+    if (this.closed || this.ending || this.dtmfHandoff) return "closed";
     if (this.turn) return "turn-active";
     if (this.output.active) return "audio-active";
     if (this.speculation) return "already-speculating";
@@ -364,7 +375,7 @@ export class StandardSession implements ConversationSession {
 
   private accept(transcript: string): void {
     const text = transcript.trim();
-    if (!text || this.closed || this.ending) return;
+    if (!text || this.closed || this.ending || this.dtmfHandoff) return;
     const wasAutomated = this.handling.automated;
     const decision = this.handling.observe(text, true);
     if (wasAutomated && decision.action === "conversation") this.interrupt("human-confirmed");
@@ -436,7 +447,7 @@ export class StandardSession implements ConversationSession {
     decision: HandlingResult,
     text = decision.text ?? "",
   ): void {
-    if (this.closed || this.ending || decision.action === "none") return;
+    if (this.closed || this.ending || this.dtmfHandoff || decision.action === "none") return;
     if (this.handling.screeningEncountered)
       this.deps.onScreening?.(this.init.callSid);
     if (decision.action === "hangup") {
@@ -806,6 +817,7 @@ export class StandardSession implements ConversationSession {
         }
         if (outcome.terminal || outcome.waitForUser) return;
       } catch (error) {
+        if (this.dtmfHandoff && this.closed) return;
         this.init.trace.log(signal.aborted ? "llm.cancelled" : "llm.failed", {
           round,
           ms: Date.now() - began,
@@ -845,7 +857,8 @@ export class StandardSession implements ConversationSession {
         if (
           !args ||
           typeof args.keys !== "string" ||
-          !/^[0-9A-D*#wW]{1,32}$/.test(args.keys)
+          !/^[0-9A-D*#wW]{1,32}$/.test(args.keys) ||
+          !/[0-9A-D*#]/.test(args.keys)
         )
           throw new Error("Invalid DTMF sequence.");
         this.init.trace.log("dtmf.requested", {
@@ -870,9 +883,8 @@ export class StandardSession implements ConversationSession {
         this.menuPending = false;
         this.init.trace.log("dtmf.sending", {
           toolCallId: call.id,
-          toneDurationMs: tool.toneDurationMs,
-          gapMs: tool.gapMs,
-          transport: this.init.sendDtmf ? "out-of-band" : "in-band",
+          ...(tool.transport === "audio" ? { toneDurationMs: tool.toneDurationMs, gapMs: tool.gapMs } : { timing: "provider-managed" }),
+          transport: this.init.sendDtmf ? "out-of-band" : tool.transport === "audio" ? "in-band-audio" : "provider",
         });
       }
       if (this.executed.has(call.id))
@@ -889,6 +901,8 @@ export class StandardSession implements ConversationSession {
         outcome = await this.deps.executeTool(tool, call, {
           callSid: this.init.callSid,
           snapshot: {
+            mediaContextId: this.init.mediaContextId,
+            handling: this.handling.checkpoint(),
             agent: this.init.agent,
             tools: this.init.tools ?? [],
             brief: this.init.brief,
@@ -897,6 +911,10 @@ export class StandardSession implements ConversationSession {
             deadline: this.deadline,
           },
           signal,
+          handoff: (pending) => {
+            this.dtmfHandoff = pending;
+            this.init.holdMediaLease?.(pending);
+          },
           speak: async (text) => {
             if (announced) return;
             await this.output.speak(text, signal);
@@ -910,10 +928,10 @@ export class StandardSession implements ConversationSession {
         });
         this.executed.set(call.id, outcome.result);
       }
-      if (tool.type === "dtmf")
-        this.init.trace.log("dtmf.completed", {
+      if (tool.type === "dtmf" && !outcome.terminal)
+        this.init.trace.log("dtmf.tool_returned", {
           toolCallId: call.id,
-          status: "transport-playback-completed",
+          status: typeof outcome.result === "object" && outcome.result && "error" in outcome.result ? "failed" : "transport-completed",
           remoteRecognition: "unconfirmed",
         });
       this.init.trace.log("tool.completed", {

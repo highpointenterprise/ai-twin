@@ -82,6 +82,15 @@ export const createTwilioTelephony = (
 ): Telephony => {
   const client = () => makeClient(credentials());
   return {
+    sendDigits: async (sid, keys, wsUrl, params, statusUrl) => {
+      if (!/^[0-9A-D*#wW]{1,32}$/.test(keys) || !/[0-9A-D*#]/.test(keys))
+        throw new Error("Invalid DTMF sequence.");
+      const response = new twilio.twiml.VoiceResponse();
+      response.play({ digits: `w${keys}` });
+      const stream = response.connect().stream({ url: wsUrl, statusCallback: statusUrl, statusCallbackMethod: "POST" });
+      for (const [name, value] of Object.entries(params)) stream.parameter({ name, value });
+      await operation("dtmf", sid, () => client().calls(sid).update({ twiml: response.toString() }));
+    },
     listNumbers: async () => {
       try {
         return (

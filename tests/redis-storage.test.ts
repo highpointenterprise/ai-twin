@@ -9,6 +9,20 @@ import { agent } from "./helpers";
 
 const url = process.env.TEST_REDIS_URL ?? process.env.REDIS_TEST_URL;
 const integration = { skip: !url && "Set TEST_REDIS_URL to run against a disposable Redis database." };
+
+test("keypad reconnect transfers a lease atomically at full call capacity", integration, async t => {
+  const { redis, second, prefix } = await fixture(t);
+  const state = new RedisCallState(redis, `${prefix}:{calls}`);
+  const other = new RedisCallState(second, `${prefix}:{calls}`);
+  assert.equal(await state.reserve("old-stream", 1), true);
+  assert.equal(await other.reserve("unrelated", 1), false);
+  assert.equal(await other.reserve("new-stream", 1, 120_000, "old-stream"), true);
+  await state.release("old-stream");
+  assert.equal(await state.activeCount(), 1);
+  assert.equal(await state.reserve("unrelated", 1), false);
+  await other.release("new-stream");
+  assert.equal(await state.reserve("unrelated", 1), true);
+});
 async function fixture(t: TestContext) {
   const redis = new Redis(url!, { maxRetriesPerRequest: 1 });
   const second = new Redis(url!, { maxRetriesPerRequest: 1 });

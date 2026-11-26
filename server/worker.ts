@@ -43,6 +43,7 @@ import {
 import { CallRegistry } from "./store/calls";
 import { ContextStore } from "./store/contexts";
 import { ToolExecutor } from "./tools/executor";
+import { DtmfService } from "./dtmf/service";
 import { TwilioSettings } from "./providers/twilio-settings";
 import { MongoTransferStore } from "./storage/transfers";
 import { keyManagementRoutes } from "./api/v1/routes/key-management";
@@ -145,7 +146,17 @@ async function main(): Promise<void> {
     persistence: transferStore,
     onCallEnded: (sid) => finalizeCall(sid),
   });
-  const executor = new ToolExecutor(telephony, fetch, warmTransfers);
+  const dtmf = new DtmfService({
+    telephony, contexts, traces, publicBaseUrl: env.PUBLIC_BASE_URL,
+    releaseLease: (id) => callState.release(id),
+    endCall: async (sid, reason) => {
+      await telephony.endCall(sid);
+      registry.patch(sid, { endedReason: reason });
+      registry.update(sid, "completed");
+      await finalizeCall(sid);
+    },
+  });
+  const executor = new ToolExecutor(telephony, fetch, warmTransfers, dtmf);
   const openings = new OpeningPreparation(createElevenLabsSynthesizer, env.MAX_CONCURRENT_CALLS);
   const engine: EngineDeps = {
     transcribe: createDeepgramTranscriber,
@@ -154,8 +165,7 @@ async function main(): Promise<void> {
     executeTool: async (tool, call, ctx) => {
       const result = await executor.execute(tool, call, { ...ctx, usage: traces.for(ctx.callSid).usage });
       if (
-        result.terminal &&
-        (tool.type !== "transferCall" || tool.transferMode !== "warm")
+        result.terminal && tool.type === "transferCall" && tool.transferMode !== "warm"
       )
         registry.patch(ctx.callSid, { transferStatus: "initiated" });
       return result;
@@ -252,6 +262,7 @@ async function main(): Promise<void> {
   }, 30000);
   dispatchTimer.unref();
   const finalizeCall = async (sid: string) => {
+    await dtmf.callerEnded(sid);
     await registry.flush();
     await traces.flush();
     await serverEvents.enqueueEndOfCall(sid);
@@ -270,6 +281,7 @@ async function main(): Promise<void> {
     traces: new TraceStore(),
   });
   const deps: HttpDeps = {
+    dtmf,
     openings,
     store,
     registry,
@@ -327,6 +339,7 @@ async function main(): Promise<void> {
         ? createConsultationSession(init, engine, warmTransfers)
         : new StandardSession({ ...init, preparedOpening: openings.take(init.callSid) }, engine),
     onResumed: (id, sid) => warmTransfers.resumed(id, sid),
+    onDtmfResumed: (resume, sid) => dtmf.resumed(resume, sid),
     pool,
     registry,
     traces,
@@ -406,6 +419,7 @@ async function main(): Promise<void> {
       const adminClosed = closeHttp(admin);
       await meetings.shutdown();
       warmTransfers.shutdown();
+      dtmf.shutdown();
       openings.close();
       pool.closeAll();
       for (const client of media.clients) client.terminate();

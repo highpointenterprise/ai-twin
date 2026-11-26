@@ -2,6 +2,7 @@ import type { ChatMessage } from "../core/ports";
 import type { AgentConfig } from "../../lib/types";
 import type { ToolConfig } from "../../lib/config";
 export interface CallContext {
+  dtmfResume?: import("../dtmf/service").DtmfResume;
   agent: AgentConfig;
   tools: ToolConfig[];
   brief: string;

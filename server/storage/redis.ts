@@ -108,18 +108,19 @@ export class RedisCallState {
     `, 1, `${this.prefix}:limit:${key}`, windowMs) as [number, number];
     return { allowed: result[0] <= limit, remaining: Math.max(0, limit - result[0]), retryAfterMs: Math.max(0, result[1]) };
   }
-  async reserve(id: string, limit: number, ttlMs = 120_000): Promise<boolean> {
+  async reserve(id: string, limit: number, ttlMs = 120_000, replaces = ""): Promise<boolean> {
     if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(ttlMs) || ttlMs < 1000)
       throw new Error("Invalid call lease configuration.");
     return (await this.redis.eval(`
       local time = redis.call('TIME')
       local now = time[1] * 1000 + math.floor(time[2] / 1000)
       redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
+      if ARGV[4] ~= '' then redis.call('ZREM', KEYS[1], ARGV[4]) end
       if not redis.call('ZSCORE', KEYS[1], ARGV[1]) and redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
       redis.call('ZADD', KEYS[1], now + tonumber(ARGV[3]), ARGV[1])
       if redis.call('PTTL', KEYS[1]) < tonumber(ARGV[3]) then redis.call('PEXPIRE', KEYS[1], ARGV[3]) end
       return 1
-    `, 1, `${this.prefix}:leases`, id, limit, ttlMs)) === 1;
+    `, 1, `${this.prefix}:leases`, id, limit, ttlMs, replaces)) === 1;
   }
   async release(id: string): Promise<void> {
     await this.redis.zrem(`${this.prefix}:leases`, id);
