@@ -246,7 +246,7 @@ test(
           .fill("Please call support back.");
         await page.getByLabel("Voicemail evidence threshold").fill("0.92");
         await page.getByLabel("Maximum beep wait (seconds)").fill("12");
-        await page.getByLabel("Menu quiet period (ms)").fill("900");
+        assert.equal(await page.getByLabel("Menu quiet period (ms)").count(), 0);
         await page
           .getByLabel("Respond to automated name-and-purpose screening")
           .check();
@@ -305,7 +305,6 @@ test(
         assert.equal(saved.voicemailDetection.provider, "builtin");
         assert.equal(saved.voicemailDetection.confidenceThreshold, 0.92);
         assert.equal(saved.voicemailDetection.beepWaitSeconds, 12);
-        assert.equal(saved.callHandling.menuSilenceMs, 900);
         assert.equal(saved.silenceTimeoutSeconds, 45);
       },
     );

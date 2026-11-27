@@ -123,6 +123,7 @@ export function VoiceSettings({
           <label>
             Voice delivery
             <select
+              aria-label="Voice delivery"
               value={a.voice.delivery ?? "neutral"}
               onChange={(e) =>
                 set({
