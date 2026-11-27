@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { AgentConfig } from "../../lib/types";
 import type { ProviderTrace } from "../core/ports";
+import type { RingbackObservation } from "./ringback";
 
 export type CallKind = "unknown" | "human" | "voicemail" | "screening" | "ivr";
 export type HandlingState =
-  CallKind | "screening-wait" | "ivr-wait" | "voicemail-speaking" | "ended";
+  CallKind | "screening-wait" | "ivr-wait" | "transfer-wait" | "ringing" | "voicemail-speaking" | "ended";
 export type HandlingAction =
   | "none"
   | "conversation"
@@ -41,6 +42,7 @@ const screenCue =
   /(?:state|say|tell|record|provide|leave).{0,40}(?:your name|name and).{0,65}(?:reason|purpose|why|after (?:the )?(?:tone|beep))|(?:call screening|screening (?:this|the|your) call)|(?:name and (?:the )?reason)|(?:if you tell me).{0,50}(?:name|calling)/i;
 const holdCue =
   /\b(?:please (?:hold|wait)|one moment|try to connect|connect(?:ing)? you|let.{0,20}know|stay on the line|please stand by|all (?:our )?(?:agents|representatives).{0,20}busy)\b/i;
+const transferCue = /\b(?:(?:your|the) call (?:is (?:now )?being|will (?:now )?be|has been) (?:transferred|forwarded|connected)|(?:i(?:'m| am)|we(?:'re| are)) (?:now )?(?:transferring|connecting) you|(?:transferring|connecting) (?:your|the) call)\b/i;
 const humanCue =
   /^(?:(?:well|yes|okay)[,.! ]+)?(?:hello|hi|hey|yes\??$|how (?:can|may) I help|who(?:'s| is) (?:this|calling)|what.{0,15}calling|(?:this is |it's |it is )?[\p{L} '-]{1,35} speaking\b|I (?:need|want|can|am|was|would|don't|do not)|can (?:you|I)|sorry|thanks|thank you for (?:waiting|holding))/iu;
 const recordingInvitation = /\b(?:leave|record) (?:me |us |your |a |the )?(?:short |brief |voice )?message\b/i;
@@ -111,6 +113,8 @@ export function classifyAnswer(text: string, screening = false): Decision {
       confidence: 0.78,
       evidence: "message-invitation",
     };
+  if (transferCue.test(value) && !/\b(?:said|says|heard|mentioned)\b/i.test(value))
+    return { kind: "unknown", confidence: 0.95, evidence: "transfer-announcement" };
   if (holdCue.test(value))
     return { kind: "unknown", confidence: 0.8, evidence: "connection-hold" };
   if (
@@ -148,6 +152,11 @@ export class CallHandling {
   private menuFinalAt?: number;
   private lastVoiceAt = -Infinity;
   private speaking = false;
+  private lastSpeechAt = -Infinity;
+  private connectionSince?: number;
+  private lastRingAt = -Infinity;
+  private deferredTimeout = "";
+  private voicemailCandidateAt = -Infinity;
   private dtmfInFlight = false;
   private lastUnknown = "";
   private lastBeepAt = -Infinity;
@@ -198,12 +207,49 @@ export class CallHandling {
       (!this.outbound && !this.automated)
     );
   }
+  get connecting(): boolean {
+    return this.state === "transfer-wait" || this.state === "ringing";
+  }
+  get canListenForRingback(): boolean {
+    return this.enabled && this.outbound && !this.dtmfInFlight &&
+      ["unknown", "human", "ivr-wait", "transfer-wait", "ringing"].includes(this.state);
+  }
+  ringback(observation: RingbackObservation, now = Date.now()): HandlingResult {
+    if (!this.canListenForRingback) return { action: "none" };
+    this.trace.log("call.ringback_detected", { ...observation, source: "audio-cadence", state: this.state });
+    this.lastRingAt = now;
+    return this.waitForConnection("ringing", "ringback-cadence", now);
+  }
+  private waitForConnection(state: "transfer-wait" | "ringing", evidence: string, now: number): HandlingResult {
+    if (!this.connecting) {
+      this.connectionSince = now;
+      this.trace.log("call.connection_wait_started", { evidence, waitSeconds: this.agent.callHandling.transferWaitSeconds });
+    }
+    this.initialResolved = true;
+    this.menuFinalAt = undefined;
+    this.menuPrefix = "";
+    this.lastBeepAt = -Infinity;
+    this.transition(state, { kind: "unknown", confidence: 0.95, evidence }, now);
+    return { action: "wait" };
+  }
+  private deferForGreeting(deadline: number, reason: string, now: number): boolean {
+    const graceMs = 30_000;
+    const speech = this.speaking && now - Math.max(this.lastVoiceAt, this.lastSpeechAt) <= 1500;
+    const candidate = now - this.voicemailCandidateAt <= 10000;
+    if ((!speech && !candidate) || now >= deadline + graceMs) return false;
+    const key = `${reason}:${deadline}`;
+    if (this.deferredTimeout !== key) {
+      this.deferredTimeout = key;
+      this.trace.log("call.timeout_deferred", { reason, state: this.state, evidence: speech ? "incoming-speech" : "voicemail-candidate", graceRemainingMs: deadline + graceMs - now });
+    }
+    return true;
+  }
   get awaitingBeep(): boolean {
-    return this.state === "voicemail";
+    return this.state === "voicemail" || this.voicemailCandidateAt !== -Infinity;
   }
   speechStart(now = Date.now()): void {
     this.speaking = true;
-    this.lastVoiceAt = now;
+    this.lastSpeechAt = this.lastVoiceAt = now;
     this.menuFinalAt = undefined;
   }
   audio(voiced: boolean, now = Date.now()): void {
@@ -211,6 +257,12 @@ export class CallHandling {
   }
   beep(now = Date.now()): HandlingResult {
     this.lastBeepAt = now;
+    if (this.state !== "voicemail" && now - this.voicemailCandidateAt <= 10000 &&
+      this.agent.voicemailDetection.confidenceThreshold <= 0.99) {
+      this.trace.log("voicemail.confirmed", { evidence: "message-invitation-and-beep", scoreType: "rule-evidence" });
+      this.transition("voicemail", { kind: "voicemail", confidence: 0.99, evidence: "message-invitation-and-beep" }, now);
+      if (this.agent.voicemailDetection.action === "hangup") return this.finish("voicemail", now);
+    }
     if (this.state !== "voicemail") return { action: "none" };
     this.transition(
       "voicemail-speaking",
@@ -227,7 +279,8 @@ export class CallHandling {
     if (!text.trim()) return { action: "none" };
     if (!this.enabled) return { action: final ? "conversation" : "none" };
     if (this.state === "ended") return { action: "wait" };
-    if (final) this.speaking = false;
+    this.lastSpeechAt = now;
+    this.speaking = !final;
     let decision = classifyAnswer(
       text,
       this.screeningEncountered && this.state.startsWith("screening"),
@@ -258,6 +311,16 @@ export class CallHandling {
       });
       this.lastDecision = fingerprint;
     }
+    if (decision.kind === "voicemail" && this.outbound && this.agent.voicemailDetection.enabled &&
+      (this.state === "unknown" || this.connecting || this.state.startsWith("ivr"))) {
+      this.voicemailCandidateAt = now;
+    }
+    if (
+      this.outbound && !this.dtmfInFlight && !this.state.startsWith("screening") &&
+      !this.state.startsWith("voicemail") &&
+      (decision.evidence === "transfer-announcement" ||
+        (decision.evidence === "connection-hold" && (final || this.automated)))
+    ) return this.waitForConnection(this.state === "ringing" ? "ringing" : "transfer-wait", decision.evidence, now);
     if (
       decision.kind === "screening" &&
       this.outbound &&
@@ -330,6 +393,7 @@ export class CallHandling {
   }
   tick(now = Date.now()): HandlingResult {
     if (!this.enabled) return { action: "none" };
+    if (now - this.voicemailCandidateAt > 10000) this.voicemailCandidateAt = -Infinity;
     if (
       this.hasDtmf &&
       this.state === "ivr" &&
@@ -355,6 +419,7 @@ export class CallHandling {
       now - this.stateSince >=
         this.agent.voicemailDetection.beepWaitSeconds * 1000
     ) {
+      if (this.deferForGreeting(this.stateSince + this.agent.voicemailDetection.beepWaitSeconds * 1000, "voicemail-beep-timeout", now)) return { action: "none" };
       if (
         this.agent.voicemailDetection.beepTimeoutAction === "leave-message" &&
         !this.speaking &&
@@ -374,6 +439,15 @@ export class CallHandling {
       }
       return this.finish("voicemail-beep-timeout", now);
     }
+    if (this.connecting) {
+      const deadline = this.connectionSince! + this.agent.callHandling.transferWaitSeconds * 1000;
+      if (now >= deadline && !this.deferForGreeting(deadline, "transfer-wait-timeout", now))
+        return this.finish("transfer-wait-timeout", now);
+      if (this.state === "ringing" && now - this.lastRingAt > 9000) {
+        this.trace.log("call.ringback_stopped", { sinceLastPatternMs: now - this.lastRingAt });
+        this.transition("transfer-wait", { kind: "unknown", confidence: 0.5, evidence: "ringback-no-longer-confirmed" }, now);
+      }
+    }
     if (
       this.state.startsWith("screening") &&
       now - this.stateSince >= this.agent.callScreening.waitSeconds * 1000
@@ -382,7 +456,8 @@ export class CallHandling {
     if (
       this.state.startsWith("ivr") &&
       !this.dtmfInFlight &&
-      now - this.stateSince >= this.agent.callHandling.ivrWaitSeconds * 1000
+      now - this.stateSince >= this.agent.callHandling.ivrWaitSeconds * 1000 &&
+      !this.deferForGreeting(this.stateSince + this.agent.callHandling.ivrWaitSeconds * 1000, "ivr-timeout", now)
     )
       return this.finish("ivr-timeout", now);
     if (
@@ -446,6 +521,7 @@ export class CallHandling {
   }
   close(): void {
     this.state = "ended";
+    this.voicemailCandidateAt = -Infinity;
   }
   private finish(reason: string, now: number): HandlingResult {
     this.trace.log("call.handling_ended", {
@@ -456,6 +532,7 @@ export class CallHandling {
       speaking: this.speaking,
       quietMs: now - this.lastVoiceAt,
       dtmfInFlight: this.dtmfInFlight,
+      ...(this.connectionSince === undefined ? {} : { connectionWaitMs: now - this.connectionSince }),
     });
     this.transition(
       "ended",
@@ -471,6 +548,8 @@ export class CallHandling {
   ): void {
     if (state === this.state) return;
     const previous = this.state;
+    if (state !== "ringing" && state !== "transfer-wait") this.connectionSince = undefined;
+    if (state === "human" || state === "ivr" || state.startsWith("screening") || state.startsWith("voicemail") || state === "ended") this.voicemailCandidateAt = -Infinity;
     this.state = state;
     this.stateSince = now;
     this.trace.log("call.state", {

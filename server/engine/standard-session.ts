@@ -20,6 +20,7 @@ import { delay, normalizePhrase, shouldInterrupt } from "../speech/timing";
 import { continuationHoldMs } from "./turn-policy";
 import { CallHandling, type HandlingResult } from "../calls/detection";
 import { BeepDetector } from "../calls/beep";
+import { RingbackDetector } from "../calls/ringback";
 import { errorDetail } from "../observability/diagnostics";
 
 import {
@@ -35,6 +36,7 @@ export class StandardSession implements ConversationSession {
   private readonly transcriber?: Transcriber;
   private readonly handling: CallHandling;
   private readonly beep: BeepDetector;
+  private readonly ringback: RingbackDetector;
   private readonly handlingTimer: NodeJS.Timeout;
   private readonly began = Date.now();
   private menuPending = false;
@@ -126,6 +128,7 @@ export class StandardSession implements ConversationSession {
     );
     if (init.dtmfResume) this.handling.resume(init.dtmfResume.handling);
     this.beep = new BeepDetector(init.inputAudioFormat);
+    this.ringback = new RingbackDetector(init.inputAudioFormat);
     this.handlingTimer = setInterval(
       () => { if (!this.dtmfHandoff) this.handleDecision(this.handling.tick()); },
       100,
@@ -153,6 +156,7 @@ export class StandardSession implements ConversationSession {
           },
           onPartial: (text) => {
             if (this.dtmfHandoff || this.closed) return;
+            if (text.trim()) this.ringback.reset();
             const decision = this.handling.observe(text, false);
             this.handleDecision(decision);
             if (
@@ -239,15 +243,20 @@ export class StandardSession implements ConversationSession {
     };
     const voiced = audioRms(chunk, format.encoding) > 600;
     this.handling.audio(voiced);
+    if (this.handling.canListenForRingback) {
+      const ringing = this.ringback.push(chunk);
+      if (ringing) this.handleDecision(this.handling.ringback(ringing));
+    } else this.ringback.reset();
     if (
       this.init.direction === "outbound" &&
       this.init.agent.voicemailDetection.enabled &&
-      (this.handling.awaitingBeep || this.handling.state === "unknown") &&
-      this.beep.push(chunk)
+      (this.handling.awaitingBeep || this.handling.state === "unknown")
     ) {
-      this.init.trace.log("call.beep_detected");
-      this.handleDecision(this.handling.beep());
-    }
+      if (this.beep.push(chunk)) {
+        this.init.trace.log("call.beep_detected");
+        this.handleDecision(this.handling.beep());
+      }
+    } else this.beep.reset();
     if (voiced) {
       this.voicedMs +=
         (chunk.length * 1000) /
@@ -376,6 +385,7 @@ export class StandardSession implements ConversationSession {
   private accept(transcript: string): void {
     const text = transcript.trim();
     if (!text || this.closed || this.ending || this.dtmfHandoff) return;
+    this.ringback.reset();
     const wasAutomated = this.handling.automated;
     const decision = this.handling.observe(text, true);
     if (wasAutomated && decision.action === "conversation") this.interrupt("human-confirmed");

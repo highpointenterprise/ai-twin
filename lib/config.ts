@@ -81,6 +81,7 @@ export const callHandlingSchema = z.object({
   ivrConfidenceThreshold: z.number().min(0.7).max(1).default(0.85),
   menuSilenceMs: z.number().int().min(200).max(3000).default(700),
   ivrWaitSeconds: z.number().int().min(5).max(120).default(30),
+  transferWaitSeconds: z.number().int().min(10).max(300).default(120),
   maxMenuSelections: z.number().int().min(1).max(30).default(12),
   maxRepeatedMenuSelections: z.number().int().min(1).max(5).default(2),
 });
@@ -93,6 +94,9 @@ export const dtmfNavigationSchema = z
       .removeDefault()
       .optional(),
     ivrWaitSeconds: callHandlingSchema.shape.ivrWaitSeconds
+      .removeDefault()
+      .optional(),
+    transferWaitSeconds: callHandlingSchema.shape.transferWaitSeconds
       .removeDefault()
       .optional(),
     maxMenuSelections: callHandlingSchema.shape.maxMenuSelections

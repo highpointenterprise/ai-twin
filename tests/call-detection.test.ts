@@ -161,6 +161,10 @@ test("beep detector rejects DTMF, short tones, ringback and silence", () => {
   for (let i = 0; i < audio.length; i += 73)
     found = detector.push(audio.subarray(i, i + 73)) || found;
   assert.equal(found, true);
+  const reset = new BeepDetector();
+  reset.push(tone(1000, 300));
+  reset.reset();
+  assert.equal(reset.push(Buffer.alloc(800, 255)), false);
 });
 
 test("screening responds only after final transcript, holds, then yields to a human", () => {

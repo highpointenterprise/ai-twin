@@ -22,6 +22,7 @@ const cases: [string, string, CallOutcome][] = [
   ["answer-detection-ended", "answer-detection-inconclusive", "unknown"],
   ["voicemail-beep-timeout", "voicemail", "voicemail"],
   ["ivr-timeout", "silence-timed-out", "silence-timeout"],
+  ["transfer-wait-timeout", "call.forwarding.no-answer", "transfer-failed"],
   ["ivr-navigation-limit", "ivr-navigation-failed", "failed"],
   ["busy", "customer-busy", "busy"],
   ["no-answer", "customer-did-not-answer", "no-answer"],

@@ -449,7 +449,9 @@ export function ToolEditor({
             <p className="hint">
               Overrides the assistant's legacy menu settings. Leave blank to
               keep existing settings. Digits are selected using the tool
-              description and assistant instructions.
+              description and assistant instructions. Transfer announcements or recognized
+              ringback use a separate wait (120 seconds by default). An active
+              greeting can extend a timeout by up to 30 seconds.
             </p>
             {(
               [
@@ -469,6 +471,7 @@ export function ToolEditor({
                   1,
                 ],
                 ["maxMenuSelections", "Maximum menu selections", 1, 30, 1],
+                ["transferWaitSeconds", "Transfer / ringing wait (seconds)", 10, 300, 1],
                 [
                   "maxRepeatedMenuSelections",
                   "Maximum attempts per menu",

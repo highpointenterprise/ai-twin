@@ -3,6 +3,7 @@ const aliases: Readonly<Record<string, string>> = {
   "answer-detection-ended": "answer-detection-inconclusive",
   "voicemail-beep-timeout": "voicemail",
   "ivr-timeout": "silence-timed-out",
+  "transfer-wait-timeout": "call.forwarding.no-answer",
   "ivr-navigation-limit": "ivr-navigation-failed",
   "max-duration": "exceeded-max-duration",
   "silence-timeout": "silence-timed-out",

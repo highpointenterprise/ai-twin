@@ -12,6 +12,10 @@ export class BeepDetector {
       sampleRate: 8000,
     },
   ) {}
+  reset(): void {
+    this.samples.length = 0;
+    this.toneMs = this.frequency = this.quietMs = 0;
+  }
   push(audio: Buffer): boolean {
     const step = this.format.encoding === "mulaw" ? 1 : 2;
     let found = false;

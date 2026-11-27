@@ -47,7 +47,7 @@ jobs:
 
   deploy:
     needs: check
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'highpointenterprise/ai-twin' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
