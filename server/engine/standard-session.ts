@@ -900,6 +900,7 @@ export class StandardSession implements ConversationSession {
         });
         outcome = await this.deps.executeTool(tool, call, {
           callSid: this.init.callSid,
+          trace: this.init.trace,
           snapshot: {
             mediaContextId: this.init.mediaContextId,
             handling: this.handling.checkpoint(),

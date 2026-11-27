@@ -1,4 +1,4 @@
-import { callHandlingSchema, screeningSchema } from "../../../../lib/config";
+import { callHandlingSchema, screeningSchema, voiceSchema as configVoiceSchema } from "../../../../lib/config";
 import { z } from "zod";
 import { assistantServerSchema } from "../../../../lib/assistant-server";
 import { listQuerySchema } from "./common";
@@ -20,16 +20,9 @@ const modelSchema = z
   })
   .strict();
 
-const voiceSchema = z
-  .object({
-    provider: z.literal("11labs").optional(),
-    voiceId: z.string().trim().max(128).optional(),
-    model: z.enum(["eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_multilingual_v2"]).optional(),
-    stability: z.number().min(0).max(1).optional(),
-    similarityBoost: z.number().min(0).max(1).optional(),
-    speed: z.number().min(0.7).max(1.2).optional(),
-  })
-  .strict();
+const voiceSchema = configVoiceSchema.partial().extend({
+  voiceId: z.string().trim().max(128).optional(),
+}).strict();
 
 const transcriberSchema = z
   .object({

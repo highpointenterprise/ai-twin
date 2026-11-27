@@ -19,7 +19,8 @@ async function proxy(request: Request, { params }: { params: Promise<{ path: str
   try {
     const response = await backendFetch(`/api/${path.join("/")}${new URL(request.url).search}`, {
       method: request.method,
-      ...(["numbers", "integrations"].includes(path[0]) ? { signal: AbortSignal.timeout(55_000) } : {}),
+      ...(["numbers", "integrations"].includes(path[0]) ? { signal: AbortSignal.timeout(55_000) }
+        : path[0] === "voices" && path[1] === "preview" ? { signal: AbortSignal.timeout(25_000) } : {}),
       headers: {
         Authorization: `Bearer ${token}`,
         ...(request.headers.has("idempotency-key") ? { "Idempotency-Key": request.headers.get("idempotency-key")! } : {}),

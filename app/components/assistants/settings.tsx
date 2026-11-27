@@ -1,7 +1,7 @@
 "use client";
 import type { AgentInput } from "@/lib/types";
 import type { ToolConfig } from "@/lib/config";
-import { VoiceLibrary } from "./voice-library";
+import { VoiceSettings } from "./voice-settings";
 export type SettingsPanel =
   "Transcriber" | "Model" | "Voice" | "Tools" | "Advanced";
 export function AssistantSettings({
@@ -73,69 +73,7 @@ export function AssistantSettings({
           )}
         </div>
       )}
-      {tab === "Voice" && (
-        <div className="fields">
-          <div className="provider">
-            <span className="dot" />
-            ElevenLabs<span className="subtle">Streaming speech</span>
-          </div>
-          <label>
-            Voice ID
-            <input
-              value={a.voiceId}
-              onChange={(e) => set("voiceId", e.target.value)}
-              placeholder="ElevenLabs voice ID, or leave blank for server default"
-            />
-          </label>
-          <VoiceLibrary
-            value={a.voiceId}
-            onChange={(value) => set("voiceId", value)}
-          />
-          <label>
-            Voice model
-            <select
-              aria-label="Voice model"
-              value={a.voice.model}
-              onChange={(e) =>
-                set("voice", {
-                  ...a.voice,
-                  model: e.target.value as AgentInput["voice"]["model"],
-                })
-              }
-            >
-              <option>eleven_flash_v2_5</option>
-              <option>eleven_turbo_v2_5</option>
-              <option>eleven_multilingual_v2</option>
-            </select>
-          </label>
-          <div className="row">
-            {number(
-              "Stability",
-              a.voice.stability,
-              (v) => set("voice", { ...a.voice, stability: v }),
-              0,
-              1,
-              0.05,
-            )}
-            {number(
-              "Similarity boost",
-              a.voice.similarityBoost,
-              (v) => set("voice", { ...a.voice, similarityBoost: v }),
-              0,
-              1,
-              0.05,
-            )}
-            {number(
-              "Speed",
-              a.voice.speed,
-              (v) => set("voice", { ...a.voice, speed: v }),
-              0.7,
-              1.2,
-              0.05,
-            )}
-          </div>
-        </div>
-      )}
+      {tab === "Voice" && <VoiceSettings value={a} onChange={onChange} />}
       {tab === "Transcriber" && (
         <div className="fields">
           <div className="provider">

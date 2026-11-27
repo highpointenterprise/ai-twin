@@ -64,7 +64,7 @@ function eventFilter<T extends EventDocument | TranscriptDocument>(sid: string, 
 }
 function withoutStorage<T extends EventDocument | TranscriptDocument>(value: T) {
   const { _id: _id, callId: _callId, ...data } = value;
-  return data;
+  return { ...data, id: _id };
 }
 
 /** Durable call history. Events and transcript messages are independently indexed documents. */

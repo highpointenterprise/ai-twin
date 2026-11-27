@@ -507,13 +507,16 @@ export function ToolEditor({
             Keypad delivery
             <select value={tool.transport ?? "provider"} onChange={(e) => setTool({ ...tool, transport: e.target.value as "provider" | "audio" })}>
               <option value="provider">Phone provider (recommended)</option>
-              <option value="audio">Audio tones (compatibility mode)</option>
+              <option value="audio">Audible keypad tones (in-band audio)</option>
             </select>
           </label>
           <p className="hint">
             Provider delivery sends keypad digits through Twilio and reconnects the assistant automatically.
             Supports 0–9, *, #, A–D; w pauses 0.5 seconds and W pauses 1 second.
             Call logs show provider acceptance, reconnection, and the next menu response.
+            Native signaling may be silent in the call and recording; silence alone does not mean the digit failed.
+            Audible keypad tones sends actual audio instead, which can be heard and captured in the assistant recording,
+            but some phone menus do not recognize it. Only one method is sent to avoid duplicate keypresses.
           </p>
           {(tool.transport ?? "provider") === "audio" ? <div className="row">
             <label>

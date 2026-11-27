@@ -14,6 +14,7 @@ import {
 import { base64ByteLength } from "./audio";
 import { TurnGate } from "./gate";
 import { delay } from "./timing";
+import { withoutAudioTags } from "../../lib/voice";
 
 const MAX_UTTERANCE_SECONDS = 180;
 const DEFAULT_CHARS_PER_MS = 0.0145;
@@ -81,7 +82,8 @@ export class SpeechStream {
 
   write(text: string): void {
     if (!text.trim() || this.disposed || this.signal.aborted) return;
-    this.spokenText += (this.spokenText ? " " : "") + text.trim();
+    const spoken = withoutAudioTags(text);
+    this.spokenText += (this.spokenText && spoken ? " " : "") + spoken;
     if (this.cacheHit) return;
     if (this.options.prepared?.usable) {
       this.unsubscribe ??= this.options.prepared.subscribe((payload) =>

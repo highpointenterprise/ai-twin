@@ -1,0 +1,115 @@
+name: Check and deploy backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ai-twin-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REGISTRY: 816122929057.dkr.ecr.us-east-2.amazonaws.com
+  ECR_REPOSITORY: ai-twin-server
+  ECS_CLUSTER: ai-twin
+  ECS_SERVICE: ai-twin-server
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports: [6379:6379]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:api
+      - run: npm run build
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@61cd5800c18cd650d23785df9484e8ff76655acf
+        with:
+          role-to-assume: arn:aws:iam::816122929057:role/ai-twin-github-deploy
+          role-session-name: github-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: "816122929057"
+          retry-max-attempts: 5
+      - name: Build and push image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker pull public.ecr.aws/docker/library/node:24-bookworm-slim
+          docker tag public.ecr.aws/docker/library/node:24-bookworm-slim node:24-bookworm-slim
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -f server/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          test "$DIGEST" != "None"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY@$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Read current task configuration
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          TASK=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" --query 'services[0].taskDefinition' --output text)
+          test "$TASK" != "None"
+          echo "task=$TASK" >> "$GITHUB_OUTPUT"
+      - name: Render release
+        id: release
+        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7
+        with:
+          task-definition-arn: ${{ steps.current.outputs.task }}
+          container-name: server
+          image: ${{ steps.image.outputs.image }}
+          environment-variables: APP_REVISION=${{ github.sha }}
+      - name: Deploy and wait for health checks
+        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b
+        with:
+          task-definition: ${{ steps.release.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+      - name: Verify live revision
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const response = await fetch('https://api.zynaptai.com/health', { signal: AbortSignal.timeout(15000) });
+          assert.equal(response.status, 200);
+          const health = await response.json();
+          assert.equal(health.revision, process.env.GITHUB_SHA, 'Live revision does not match this release');
+          console.log(`Live backend: ${health.revision}`);
+          JS

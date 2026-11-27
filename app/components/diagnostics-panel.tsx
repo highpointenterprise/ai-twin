@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { api } from "./api";
+import { useCallTrace } from "./use-call-trace";
+import { CallLog, downloadCallLogs } from "./call-log";
 interface Snapshot {
   configuration: {
     missing: string[];
@@ -29,6 +31,8 @@ export function DiagnosticsPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [callSid, setCallSid] = useState(""),
     [error, setError] = useState("");
+  const sid = callSid.trim();
+  const { trace, loading: traceLoading, error: traceError } = useCallTrace(sid);
   useEffect(() => {
     let disposed = false;
     const load = () =>
@@ -122,8 +126,8 @@ export function DiagnosticsPanel() {
       <section className="fields">
         <div className="section-head">
           <h3>Live diagnostic log</h3>
-          <Button variant="outline" disabled={!snapshot} onClick={download}>
-            Download logs
+          <Button variant="outline" disabled={sid ? !trace || traceLoading || !!traceError : !snapshot} onClick={() => sid && trace ? downloadCallLogs(sid, trace.events) : download()}>
+            {sid ? "Download all call logs" : "Download recent diagnostics"}
           </Button>
         </div>
         <label>
@@ -137,9 +141,13 @@ export function DiagnosticsPanel() {
         <p className="hint">
           Updates every 3 seconds. Includes webhooks, stream authentication,
           transcription, model, voice generation, playback and errors. Provider
-          keys and raw audio are excluded. Logs can contain conversation text.
+          keys and raw audio are excluded. Enter a Call SID to load its complete stored history. Without a filter, this shows recent process diagnostics. Logs can contain conversation text.
         </p>
-        <pre aria-label="Diagnostic events" style={{ maxHeight: 600 }}>
+        {sid ? <>
+          {traceLoading && <p role="status">Loading complete call history…</p>}
+          {traceError && <p role="alert" className="error">{traceError}</p>}
+          {trace && <CallLog key={sid} events={trace.events} />}
+        </> : <pre aria-label="Diagnostic events" style={{ maxHeight: 600 }}>
           {snapshot?.events
             .map(
               (e) =>
@@ -147,7 +155,7 @@ export function DiagnosticsPanel() {
             )
             .join("\n") ||
             "No events yet. Make a test call, then watch the stages appear here."}
-        </pre>
+        </pre>}
       </section>
     </div>
   );

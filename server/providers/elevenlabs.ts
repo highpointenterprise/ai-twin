@@ -7,6 +7,7 @@ import type { SynthesizerFactory } from "../core/ports";
 import { providerAgent } from "./network";
 import { logEvent } from "../observability/trace";
 import { errorDetail, redactText } from "../observability/diagnostics";
+import { deliveryTags, expressiveVoice, withoutAudioTags } from "../../lib/voice";
 
 export const elevenLabsSynthesizerFactory =
   (
@@ -26,20 +27,24 @@ export const elevenLabsSynthesizerFactory =
       began = Date.now();
     const outputFormat =
       format.encoding === "mulaw" ? "ulaw_8000" : `pcm_${format.sampleRate}`;
+    const dialogue = expressiveVoice(config.model);
     log("tts.connecting", {
       provider: "elevenlabs",
       voiceId,
       model: config.model,
       format: outputFormat,
+      protocol: dialogue ? "dialogue" : "speech",
+      delivery: config.delivery,
+      buffering: "provider-context",
     });
     const query = new URLSearchParams({
       model_id: config.model,
       output_format: outputFormat,
-      auto_mode: "true",
     });
+    if (!dialogue) query.set("auto_mode", "false");
     const usageId = trace?.usage?.startRequest("elevenlabs", config.model, "voice", "characters");
     const socket = connect(
-      `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${query}`,
+      `wss://api.elevenlabs.io/v1/${dialogue ? "text-to-dialogue" : `text-to-speech/${encodeURIComponent(voiceId)}`}/stream-input?${query}`,
       {
         headers: { "xi-api-key": env.ELEVENLABS_API_KEY },
         agent: providerAgent(),
@@ -120,13 +125,16 @@ export const elevenLabsSynthesizerFactory =
       if (closed) return;
       log("tts.connected", { ms: Date.now() - began });
       socket.send(
-        JSON.stringify({
+        JSON.stringify(dialogue ? { voices: [voiceId] } : {
           text: " ",
           voice_settings: {
             stability: config.stability,
             similarity_boost: config.similarityBoost,
             speed: config.speed,
+            style: config.style,
+            use_speaker_boost: config.useSpeakerBoost,
           },
+          generation_config: { chunk_length_schedule: [50, 120, 160, 200] },
         }),
       );
       readyResolve();
@@ -144,6 +152,7 @@ export const elevenLabsSynthesizerFactory =
       const d = parseJson(raw.toString()) as {
         audio?: string;
         isFinal?: boolean;
+        is_final?: boolean;
         error?: unknown;
         message?: string;
         detail?: unknown;
@@ -173,7 +182,7 @@ export const elevenLabsSynthesizerFactory =
           return;
         }
       }
-      if (d.isFinal) {
+      if (d.isFinal || d.is_final) {
         finish("final-marker");
         socket.close();
       }
@@ -208,7 +217,15 @@ export const elevenLabsSynthesizerFactory =
         if (closed) throw new Error("Synthesis cancelled.");
         if (socket.readyState !== WebSocket.OPEN)
           throw new Error("ElevenLabs socket closed before text was sent.");
-        socket.send(JSON.stringify({ text: `${text} `, flush: true }));
+        text = dialogue ? text : withoutAudioTags(text);
+        if (!text.trim()) return;
+        if (dialogue && totalCharacters === 0 && !text.trimStart().startsWith("[")) {
+          const tag = deliveryTags[config.delivery];
+          if (tag) text = `${tag} ${text}`;
+        }
+        socket.send(JSON.stringify(dialogue
+          ? { inputs: [{ text: `${text} `, voice_id: voiceId, new_turn: false }] }
+          : { text: `${text} ` }));
         totalCharacters += text.length + 1;
         trace?.usage?.addTts(config.model, [...text].length + 1, usageId);
         log("tts.text_sent", {
@@ -222,7 +239,7 @@ export const elevenLabsSynthesizerFactory =
         if (!endRequested) {
           endRequested = true;
           if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ text: "" }));
+            socket.send(JSON.stringify(dialogue ? { close_socket: true } : { text: "" }));
             log("tts.eos_sent");
           }
         }

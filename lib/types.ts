@@ -140,6 +140,7 @@ export interface VoiceOption {
 }
 
 export interface TranscriptLine {
+  id?: string;
   at: number;
   role: "caller" | "agent";
   text: string;
@@ -147,12 +148,14 @@ export interface TranscriptLine {
 }
 
 export interface TraceEvent {
+  id?: string;
   at: number;
   event: string;
   detail: Record<string, string | number | boolean>;
 }
 
 export interface CallTraceView {
+  pagination?: { eventsNextCursor: string | null; transcriptNextCursor: string | null };
   startedAt: number;
   stats: {
     turns: number;

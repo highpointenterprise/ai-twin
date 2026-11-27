@@ -41,6 +41,10 @@ test(
           endedReason,
         });
       }
+      await db.collection<{ _id: string }>("call_events").insertMany(Array.from({ length: 1205 }, (_, i) => ({
+        _id: `${sid}:${String(i).padStart(6, "0")}`, callId: sid, at: 1000 + i,
+        event: i === 0 ? "call.very_first_event" : "media.sent", detail: { index: i },
+      })));
       service = new AssistantServerEvents({
         db,
         calls,
@@ -166,6 +170,18 @@ test(
       .getByRole("button", { name: "outbound" })
       .click();
     await page.getByText("customer-busy", { exact: true }).waitFor();
+    await page.getByText("Events & tool activity (1205)", { exact: true }).click();
+    await page.getByRole("button", { name: /Show 500 earlier events/ }).click();
+    await page.getByRole("button", { name: /Show 500 earlier events/ }).click();
+    assert.match(await page.getByLabel("Call events", { exact: true }).innerText(), /call.very_first_event/);
+    const pendingDownload = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download all logs", exact: true }).click();
+    const download = await pendingDownload;
+    const stream = await download.createReadStream();
+    let downloadedLogs = "";
+    for await (const chunk of stream!) downloadedLogs += chunk.toString();
+    assert.equal(downloadedLogs.trim().split("\n").length, 1205);
+    assert.match(downloadedLogs, /call.very_first_event/);
     const delivery = page.getByRole("region", {
       name: "Server webhook delivery",
     });

@@ -30,6 +30,66 @@ const tone = (hz: number, ms: number) =>
 const beepAudio = () =>
   Buffer.concat([tone(1000, 300), Buffer.alloc(800, 255)]);
 
+test("voicemail recording invitations take precedence over optional mailbox keys", () => {
+  for (const text of [
+    "At the tone, please record your message. When you've finished recording, you may hang up, or press one for more options.",
+    "At the tone please record your message when you have finished recording you may hang up or press one for more options",
+    "Please leave your message after the beep. To leave a callback number, press five.",
+  ]) assert.equal(classifyAnswer(text).kind, "voicemail", text);
+  for (const text of [
+    "Press one to leave a message after the tone, or press two for sales.",
+    "To leave a message after the tone, press one.",
+    "For support press two, for voicemail press three.",
+    "To leave a callback number, press five.",
+  ]) assert.equal(classifyAnswer(text).kind, "ivr", text);
+});
+
+test("the reported voicemail sequence cannot select the callback-number menu", () => {
+  const events: string[] = [];
+  const h = new CallHandling(configured(), { log: event => { events.push(event); } }, true, true, 0);
+  h.observe("At the tone, please record your message", false, 100);
+  h.observe("At the tone, please record your message. When you've finished recording, you may hang up, or press one for more options.", true, 700);
+  h.speechStart(800);
+  h.observe("To leave a callback number, press five.", false, 900);
+  h.observe("To leave a callback number, press five.", true, 1100);
+  assert.equal(h.state, "voicemail");
+  assert.equal(h.tick(1800).action, "none");
+  assert.match(h.beginDtmf(1800)!, /complete/);
+  assert.equal(h.beep(2000).action, "leave-message");
+  assert.equal(h.observe("Press one for more options", true, 2100).action, "none");
+  assert.equal(h.state, "voicemail-speaking");
+  assert.ok(events.includes("voicemail.optional_menu_ignored"));
+});
+
+test("voicemail without a detected beep follows the configured fallback instead of waiting in IVR", () => {
+  const a = configured();
+  a.voicemailDetection.beepTimeoutAction = "leave-message";
+  const h = new CallHandling(a, trace, true, true, 0);
+  h.observe("At the tone please record your message. Press one for more options.", true, 100);
+  h.observe("To leave a callback number press five", true, 1000);
+  assert.equal(h.tick(3100).action, "leave-message");
+  const hangup = configured();
+  hangup.voicemailDetection.action = "hangup";
+  const stop = new CallHandling(hangup, trace, true, true, 0);
+  assert.equal(stop.observe("At the tone please record your message. Press one for more options.", true, 100).reason, "voicemail");
+});
+
+test("a session leaves its voicemail message instead of invoking keypad or repeating its opening", async t => {
+  let keypadCalls = 0;
+  const h = harness({ direction: "outbound", agent: configured(), tools: [{
+    ...toolSchema.parse({ type: "dtmf", name: "dial_keypad", description: "Find sales" }), id: "keypad",
+  }] }, { executeTool: async () => { keypadCalls++; return { result: {} }; } });
+  t.after(() => h.session.close());
+  await tick();
+  h.events.onPartial("At the tone, please record your message");
+  h.events.onEnd("At the tone, please record your message. When you've finished recording, you may hang up, or press one for more options.");
+  h.events.onEnd("To leave a callback number, press five.");
+  h.session.pushAudio(beepAudio().toString("base64"));
+  await until(() => h.ended.includes("voicemail"));
+  assert.equal(keypadCalls, 0);
+  assert.deepEqual(h.spoken, ["Please call Acme back."]);
+});
+
 test("answer evidence distinguishes human, mailbox, screening and single-option IVR", () => {
   for (const [text, kind] of [
     ["Hello?", "human"],
