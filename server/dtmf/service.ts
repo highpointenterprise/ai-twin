@@ -91,6 +91,8 @@ export class DtmfService {
     op.timer.unref();
     trace.log("dtmf.provider_requested", {
       operationId: op.id, transport: "twilio-play-digits",
+      audibleTones: "carrier-dependent",
+      recordingTones: "not-guaranteed",
       digitCount: keys.replace(/[wW]/g, "").length,
       pauseMs: [...keys].reduce((sum, k) => sum + (k === "w" ? 500 : k === "W" ? 1000 : 0), 0),
       selection: keys.length === 1 ? keys : "[redacted sequence]",

@@ -24,7 +24,9 @@ import express, {
   type Response,
 } from "express";
 import { z, ZodError } from "zod";
-import { toolSchema } from "../../lib/config";
+import { toolSchema, voiceSchema } from "../../lib/config";
+import { previewVoice } from "../speech/preview";
+import { createElevenLabsSynthesizer } from "../providers/elevenlabs";
 import { env, missingCallConfiguration } from "../../lib/env";
 import { signStreamToken, verifyStreamToken } from "../../lib/token";
 import type { CallStatus, PhoneNumberView, VoiceOption } from "../../lib/types";
@@ -52,6 +54,7 @@ import {
   type TwilioSettings,
 } from "../providers/twilio-settings";
 export interface HttpDeps {
+  synthesize?: import("../core/ports").SynthesizerFactory;
   dtmf?: import("../dtmf/service").DtmfService;
   openings?: import("../speech/preparation").OpeningPreparation;
   store: AgentRepository;
@@ -192,6 +195,8 @@ export const createAdminApp = (
 ): Express => {
   const { store, registry, telephony, tools, contexts, traces } = d;
   const app = express();
+  let previewBusy = false;
+  let previewAttempts: number[] = [];
   app.disable("x-powered-by");
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api/v1/auth", auth.router);
@@ -229,6 +234,29 @@ export const createAdminApp = (
       },
     }),
   );
+  app.post("/api/voices/preview", handle(async (req, res) => {
+    const body = z.object({ voiceId: z.string().trim().max(128), voice: voiceSchema, text: z.string().trim().min(1).max(600) }).strict().parse(req.body);
+    const voiceId = body.voiceId || env.ELEVENLABS_VOICE_ID;
+    if (!voiceId || (!env.ELEVENLABS_API_KEY && !d.synthesize)) throw new HttpError(503, "Configure an ElevenLabs API key and voice before previewing.");
+    previewAttempts = previewAttempts.filter(at => at > Date.now() - 60_000);
+    if (previewBusy || previewAttempts.length >= 10) {
+      res.set("Retry-After", "60");
+      throw new HttpError(429, "Please wait before generating another preview.");
+    }
+    previewAttempts.push(Date.now());
+    previewBusy = true;
+    const abort = new AbortController();
+    const disconnect = () => abort.abort();
+    res.on("close", disconnect);
+    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(20_000)]);
+    try {
+      const audio = await previewVoice(d.synthesize ?? createElevenLabsSynthesizer, voiceId, body.voice, body.text, signal);
+      res.set({ "Cache-Control": "no-store", "Content-Type": "audio/wav" }).send(audio);
+    } catch (error) {
+      logEvent("voice.preview_failed", errorDetail(error));
+      if (!res.destroyed) throw new HttpError(502, "Voice preview failed. Check model access, voice ID and ElevenLabs credits.");
+    } finally { previewBusy = false; res.off("close", disconnect); }
+  }));
   app.get(
     "/api/diagnostics",
     handle(async (req, res) =>

@@ -4,13 +4,14 @@ import type {
   AgentConfig,
   CallRecord,
   CallCost,
-  CallTraceView,
   PhoneNumberView,
 } from "../../lib/types";
 import { api } from "./api";
 import { callOutcome } from "../../lib/call-outcomes";
 import { CallRecordings } from "./call-recordings";
 import { CallServerEvents } from "./call-server-events";
+import { useCallTrace } from "./use-call-trace";
+import { CallLog, downloadCallLogs } from "./call-log";
 interface TransferView {
   id: string;
   phase: string;
@@ -37,7 +38,7 @@ export function CallsPanel({
   const [previousPages, setPreviousPages] = useState<string[]>([]);
   const [nextCursor, setNextCursor] = useState("");
   const [transfer, setTransfer] = useState<TransferView | null>(null);
-  const [trace, setTrace] = useState<CallTraceView | null>(null);
+  const { trace, loading: traceLoading, error: traceError } = useCallTrace(selected);
   const [agentId, setAgent] = useState(agents[0]?.id ?? ""),
     [to, setTo] = useState(""),
     [from, setFrom] = useState(initialFrom),
@@ -93,14 +94,10 @@ export function CallsPanel({
           setNextCursor(response.headers.get("X-Next-Cursor") ?? "");
         }
         if (selected) {
-          const t = await api<CallTraceView>(`/calls/${selected}/trace`).catch(
-            () => null,
-          );
           const transfer = await api<TransferView | null>(
             `/calls/${selected}/transfer`,
           ).catch(() => null);
           if (!disposed) {
-            setTrace(t);
             setTransfer(transfer);
           }
         }
@@ -125,7 +122,6 @@ export function CallsPanel({
         from: from || undefined,
         context: context || undefined,
       });
-      setTrace(null);
       setTransfer(null);
       setCursor("");
       setPreviousPages([]);
@@ -235,7 +231,6 @@ export function CallsPanel({
                         className="text-button"
                         onClick={() => {
                           setSelected(c.sid);
-                          setTrace(null);
                           setTransfer(null);
                         }}
                       >
@@ -334,9 +329,10 @@ export function CallsPanel({
             </button>
             <button
               className="ghost"
-              onClick={() => void downloadArtifact(active.sid, "logs")}
+              disabled={!trace || traceLoading || !!traceError}
+              onClick={() => trace && downloadCallLogs(active.sid, trace.events)}
             >
-              Download logs
+              Download all logs
             </button>
             <button
               className="ghost"
@@ -367,7 +363,6 @@ export function CallsPanel({
                 className="text-button"
                 onClick={() => {
                   setSelected(active.parentCallSid!);
-                  setTrace(null);
                   setTransfer(null);
                 }}
               >
@@ -387,7 +382,6 @@ export function CallsPanel({
                   className="ghost"
                   onClick={() => {
                     setSelected(transfer.operatorSid!);
-                    setTrace(null);
                     setTransfer(null);
                   }}
                 >
@@ -424,6 +418,8 @@ export function CallsPanel({
               Usage and costs will appear after call processing completes.
             </p>
           )}
+          {traceLoading && <p role="status">Loading complete call history…</p>}
+          {traceError && <p role="alert" className="error">{traceError} Displayed events may be incomplete until refresh succeeds.</p>}
           {trace ? (
             <>
               <ol className="transcript">
@@ -438,14 +434,7 @@ export function CallsPanel({
                 <summary>
                   Events & tool activity ({trace.events.length})
                 </summary>
-                <pre>
-                  {trace.events
-                    .map(
-                      (e) =>
-                        `${new Date(e.at).toLocaleTimeString()} ${e.event} ${JSON.stringify(e.detail)}`,
-                    )
-                    .join("\n")}
-                </pre>
+                <CallLog key={active.sid} events={trace.events} />
               </details>
             </>
           ) : (

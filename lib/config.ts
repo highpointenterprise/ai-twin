@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assistantServerSchema } from "./assistant-server";
+import { voiceModels } from "./voice";
 export const e164 = z
   .string()
   .regex(/^\+[1-9]\d{6,14}$/, "Use an E.164 number, e.g. +14155550123.");
@@ -16,11 +17,15 @@ export const transcriberSchema = z.object({
 export const voiceSchema = z.object({
   provider: z.literal("11labs").default("11labs"),
   model: z
-    .enum(["eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_multilingual_v2"])
+    .enum(voiceModels)
     .default("eleven_flash_v2_5"),
   stability: z.number().min(0).max(1).default(0.5),
   similarityBoost: z.number().min(0).max(1).default(0.75),
   speed: z.number().min(0.7).max(1.2).default(1),
+  style: z.number().min(0).max(1).default(0),
+  useSpeakerBoost: z.boolean().default(false),
+  delivery: z.enum(["neutral", "warm", "calm", "empathetic", "confident", "excited", "serious"]).default("neutral"),
+  deliveryInstructions: z.string().trim().max(1000).default(""),
 });
 export const startSpeakingSchema = z.object({
   waitSeconds: z.number().min(0).max(5).default(0),

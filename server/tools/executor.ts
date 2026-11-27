@@ -69,8 +69,24 @@ export class ToolExecutor {
         return this.dtmf.send(call.id, args.keys, context);
       }
       const audio = dtmfAudio(args.keys, tool.toneDurationMs, tool.gapMs);
-      if (context.sendDtmf) await context.sendDtmf(args.keys, tool.toneDurationMs, tool.gapMs);
-      else await context.playAudio(audio);
+      const transport = context.sendDtmf ? "out-of-band" : "in-band-audio";
+      const began = Date.now();
+      context.trace?.log("dtmf.playback_requested", {
+        operationId: call.id, transport,
+        selection: args.keys.length === 1 ? args.keys : "[redacted sequence]",
+        digitCount: args.keys.replace(/[wW]/g, "").length,
+        toneDurationMs: tool.toneDurationMs, gapMs: tool.gapMs,
+        audioDurationMs: context.sendDtmf ? 0 : audio.length / 8,
+        audibleTones: !context.sendDtmf,
+      });
+      try {
+        if (context.sendDtmf) await context.sendDtmf(args.keys, tool.toneDurationMs, tool.gapMs);
+        else await context.playAudio(audio);
+        context.trace?.log("dtmf.playback_completed", { operationId: call.id, transport, ms: Date.now() - began, remoteRecognition: "unconfirmed" });
+      } catch (error) {
+        context.trace?.log("dtmf.playback_failed", { operationId: call.id, transport, ms: Date.now() - began, cancelled: context.signal.aborted });
+        throw error;
+      }
       return {
         waitForUser: true,
         result: { status: "tones-played", remoteRecognition: "unconfirmed" },

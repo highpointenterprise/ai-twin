@@ -1,4 +1,5 @@
 import type { AgentConfig } from "../../lib/types";
+import { expressiveVoice } from "../../lib/voice";
 
 export const STYLE_RULES = [
   "You are speaking in a live conversation, so talk naturally: short sentences, contractions, and small natural reactions.",
@@ -39,7 +40,13 @@ export const buildBrief = (context?: string, plannedMinutes?: number): string =>
     .join("\n\n");
 
 export const buildSystemPrompt = (agent: AgentConfig, brief: string): string =>
-  [agent.systemPrompt, brief, STYLE_RULES].filter(Boolean).join("\n\n");
+  [agent.systemPrompt, brief, STYLE_RULES,
+    expressiveVoice(agent.voice.model) ? [
+      "Voice delivery: the speech renderer supports these inaudible audio tags: [warmly], [calmly], [sympathetic], [confidently], [excited], [serious], [curious], [sad], [happy], [angry], [whispering], [laughs], [sighs]. These tags are the only exception to the no-stage-directions rule. Use sparingly before a complete phrase; never output a tag without spoken words. Never put tags in tool arguments.",
+      `Preferred delivery: ${agent.voice.delivery}. Use natural conversational timing; avoid stretched spellings, excessive ellipses, and theatrical goodbyes.`,
+      agent.voice.deliveryInstructions ? `Additional voice delivery guidance (apply to performance, not spoken content): ${agent.voice.deliveryInstructions}` : "",
+    ].filter(Boolean).join(" ") : "Do not output bracketed emotion or delivery tags: this speech model does not support them.",
+  ].filter(Boolean).join("\n\n");
 
 export const IVR_RULES = [
   "You may reach an automated phone menu (IVR). It is a machine, not a person: never greet it, answer it, or ask it questions.",

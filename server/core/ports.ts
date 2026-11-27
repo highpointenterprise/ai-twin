@@ -85,6 +85,7 @@ export interface ConversationSnapshot {
   deadline: number;
 }
 export interface ToolContext {
+  trace?: ProviderTrace;
   handoff?: (pending: boolean) => void;
   sendDtmf?: (keys: string, durationMs: number, gapMs: number) => Promise<void>;
   usage?: UsageMeter;
