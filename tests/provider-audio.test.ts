@@ -143,3 +143,65 @@ test("ElevenLabs handshake errors report the HTTP status instead of stalling sil
   t.after(() => synth.close());
   await assert.rejects(synth.push("Hello"), /HTTP 401/);
 });
+
+test("speech streaming retains context between fragments and sends configured voice controls", async t => {
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  await once(server, "listening");
+  t.after(() => { for (const c of server.clients) c.terminate(); server.close(); });
+  const messages: Record<string, any>[] = [];
+  server.on("connection", socket => socket.on("message", raw => {
+    const message = JSON.parse(raw.toString()); messages.push(message);
+    if (message.text === "") {
+      socket.send(JSON.stringify({ audio: Buffer.alloc(160, 255).toString("base64") }));
+      socket.send(JSON.stringify({ is_final: true }));
+    }
+  }));
+  const a = agent({ voice: { model: "eleven_turbo_v2_5", style: 0.2, useSpeakerBoost: true, speed: 1.05 } });
+  const synth = elevenLabsSynthesizerFactory(url => {
+    assert.equal(new URL(url).searchParams.get("auto_mode"), "false");
+    return new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  })("voice", () => {}, a.voice);
+  t.after(() => synth.close());
+  await synth.push("[warmly] Thanks for your time,");
+  await synth.push("have a good day.");
+  await synth.end();
+  assert.deepEqual(messages[0].voice_settings, { stability: 0.5, similarity_boost: 0.75, speed: 1.05, style: 0.2, use_speaker_boost: true });
+  assert.ok(messages.slice(1).every(message => !message.flush));
+  assert.ok(!JSON.stringify(messages).includes("warmly"));
+  assert.equal(messages[1].text, "Thanks for your time, ");
+});
+
+for (const model of ["eleven_v3_conversational", "eleven_v4_turbo"] as const)
+  test(`${model} uses dialogue protocol, keeps one turn and waits for final stream audio`, async t => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await once(server, "listening");
+    t.after(() => { for (const c of server.clients) c.terminate(); server.close(); });
+    const messages: Record<string, any>[] = [];
+    server.on("connection", socket => socket.on("message", raw => {
+      const message = JSON.parse(raw.toString()); messages.push(message);
+      if (message.close_socket) {
+        socket.send(JSON.stringify({ audio: Buffer.alloc(160, 255).toString("base64") }));
+        socket.send(JSON.stringify({ is_final_audio_for_turn: true }));
+        socket.send(JSON.stringify({ audio: Buffer.alloc(80, 255).toString("base64") }));
+        socket.send(JSON.stringify({ is_final: true }));
+      }
+    }));
+    const a = agent({ voice: { model, delivery: "warm" } });
+    let bytes = 0;
+    const synth = elevenLabsSynthesizerFactory(url => {
+      const target = new URL(url);
+      assert.equal(target.pathname, "/v1/text-to-dialogue/stream-input");
+      assert.equal(target.searchParams.get("model_id"), model);
+      assert.equal(target.searchParams.get("auto_mode"), null);
+      return new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    })("voice", audio => { bytes += Buffer.from(audio, "base64").length; }, a.voice);
+    t.after(() => synth.close());
+    await synth.push("Goodbye.");
+    await synth.push("[calmly] Take care.");
+    await synth.end();
+    assert.deepEqual(messages[0], { voices: ["voice"] });
+    assert.deepEqual(messages[1], { inputs: [{ text: "[warmly] Goodbye. ", voice_id: "voice", new_turn: false }] });
+    assert.equal(messages[2].inputs[0].text, "[calmly] Take care. ");
+    assert.deepEqual(messages[3], { close_socket: true });
+    assert.equal(bytes, 240);
+  });

@@ -272,3 +272,34 @@ test("inbound routing resolves assigned assistant and reuses context for callbac
   assert.equal(d.registry.get("CA-inbound")?.direction, "inbound");
   assert.ok(d.contexts.idForSid("CA-inbound"));
 });
+
+test("voice previews validate settings, return playable phone-band WAV and limit generation", async t => {
+  const d = deps();
+  let generations = 0;
+  d.synthesize = (voiceId, audio, config, format) => {
+    generations++;
+    assert.equal(voiceId, "chosen-voice");
+    assert.equal(config?.model, "eleven_v4_turbo");
+    assert.deepEqual(format, { encoding: "pcm_s16le", sampleRate: 8000 });
+    return { push: async text => { assert.equal(text, "Goodbye."); }, end: async () => { audio(Buffer.alloc(160).toString("base64")); }, close: () => {} };
+  };
+  const { server, url } = await listen(createAdminApp(d));
+  t.after(() => server.close());
+  const body = { voiceId: "chosen-voice", voice: { model: "eleven_v4_turbo", delivery: "warm" }, text: "Goodbye." };
+  const post = (data: unknown) => fetch(`${url}/api/voices/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  assert.equal((await post({ ...body, text: "x".repeat(601) })).status, 400);
+  assert.equal((await post({ ...body, voice: { speed: 9 } })).status, 400);
+  assert.equal(generations, 0);
+  for (let i = 0; i < 10; i++) {
+    const response = await post(body);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type")!, /audio\/wav/);
+    const wav = Buffer.from(await response.arrayBuffer());
+    assert.equal(wav.toString("ascii", 0, 4), "RIFF");
+    assert.equal(wav.readUInt32LE(24), 8000);
+    assert.equal(wav.readUInt32LE(40), 160);
+    assert.equal(wav.length, 204);
+  }
+  assert.equal((await post(body)).status, 429);
+  assert.equal(generations, 10);
+});

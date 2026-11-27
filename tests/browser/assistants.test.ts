@@ -168,6 +168,23 @@ test(
           .getByLabel("Voice model", { exact: true })
           .selectOption("eleven_multilingual_v2");
         await drawer.getByLabel("Speed", { exact: true }).fill("1.1");
+        await drawer.getByLabel("Style exaggeration", { exact: true }).fill("0.15");
+        await drawer.getByLabel("Speaker boost", { exact: true }).check();
+        await drawer.getByLabel("Voice model", { exact: true }).selectOption("eleven_v4_turbo");
+        await drawer.getByLabel("Voice delivery", { exact: true }).selectOption("warm");
+        await drawer.getByLabel("Voice delivery instructions").fill("Calm and natural, with brief goodbyes.");
+        assert.equal(await drawer.getByLabel("Speed", { exact: true }).count(), 0);
+        await page.route("**/api/backend/voices/preview", route => {
+          const body = route.request().postDataJSON();
+          assert.equal(body.voiceId, "custom-voice");
+          assert.equal(body.voice.model, "eleven_v4_turbo");
+          assert.equal(body.voice.delivery, "warm");
+          return route.fulfill({ contentType: "audio/wav", body: Buffer.from("RIFF") });
+        });
+        await drawer.getByRole("button", { name: "Preview voice", exact: true }).click();
+        await drawer.getByLabel("Voice preview", { exact: true }).waitFor();
+        await page.unroute("**/api/backend/voices/preview");
+        await drawer.getByLabel("Voice model", { exact: true }).selectOption("eleven_multilingual_v2");
         if (process.env.DASHBOARD_SCREENSHOTS)
           await page.screenshot({ path: "work/assistants-drawer-desktop.png" });
         await drawer
@@ -262,6 +279,10 @@ test(
         assert.equal(saved.voiceId, "custom-voice");
         assert.equal(saved.voice.model, "eleven_multilingual_v2");
         assert.equal(saved.voice.speed, 1.1);
+        assert.equal(saved.voice.style, 0.15);
+        assert.equal(saved.voice.useSpeakerBoost, true);
+        assert.equal(saved.voice.delivery, "warm");
+        assert.equal(saved.voice.deliveryInstructions, "Calm and natural, with brief goodbyes.");
         assert.deepEqual(saved.toolIds, [tool.id]);
         assert.deepEqual(saved.server, {
           url: "https://receiver.example/call-ended",

@@ -179,13 +179,16 @@ test("DTMF defaults to provider delivery and requires an explicit audio compatib
   const tool = { ...toolSchema.parse({ type: "dtmf", name: "keypad", description: "Sales" }), id: "tool" };
   if (tool.type !== "dtmf") throw new Error("Expected keypad tool");
   let audio = 0;
-  const context = { callSid: "CA-test", signal: new AbortController().signal, speak: async () => {}, playAudio: async () => { audio++; } };
+  const trace = new TraceStore().for("CA-test");
+  const context = { trace, callSid: "CA-test", signal: new AbortController().signal, speak: async () => {}, playAudio: async (buffer: Buffer) => { assert.ok(buffer.length > 0); audio++; } };
   const call = { id: "op", name: "keypad", arguments: '{"keys":"2"}' };
   await assert.rejects(ex.execute(tool, call, context), /unavailable/);
   assert.equal(audio, 0);
   const result = await ex.execute({ ...tool, transport: "audio" }, call, context);
   assert.equal(result.waitForUser, true);
   assert.equal(audio, 1);
+  assert.ok(trace.view().events.some(e => e.event === "dtmf.playback_requested" && e.detail.audibleTones === true));
+  assert.ok(trace.view().events.some(e => e.event === "dtmf.playback_completed" && e.detail.remoteRecognition === "unconfirmed"));
 });
 
 test("a live session finishes one native operation across speech events and expected socket closure", async t => {
