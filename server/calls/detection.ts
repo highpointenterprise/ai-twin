@@ -218,6 +218,7 @@ export class CallHandling {
     if (!this.canListenForRingback) return { action: "none" };
     this.trace.log("call.ringback_detected", { ...observation, source: "audio-cadence", state: this.state });
     this.lastRingAt = now;
+    this.voicemailCandidateAt = -Infinity;
     return this.waitForConnection("ringing", "ringback-cadence", now);
   }
   private waitForConnection(state: "transfer-wait" | "ringing", evidence: string, now: number): HandlingResult {
@@ -234,7 +235,7 @@ export class CallHandling {
   }
   private deferForGreeting(deadline: number, reason: string, now: number): boolean {
     const graceMs = 30_000;
-    const speech = this.speaking && now - Math.max(this.lastVoiceAt, this.lastSpeechAt) <= 1500;
+    const speech = (this.speaking || this.state === "voicemail") && now - Math.max(this.lastVoiceAt, this.lastSpeechAt) <= 1500;
     const candidate = now - this.voicemailCandidateAt <= 10000;
     if ((!speech && !candidate) || now >= deadline + graceMs) return false;
     const key = `${reason}:${deadline}`;

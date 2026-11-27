@@ -4,7 +4,7 @@ import {
   RingbackDetector,
   type RingbackObservation,
 } from "../server/calls/ringback";
-import { encodeMulaw, dtmfAudio } from "../server/speech/audio";
+import { decodeMulaw, encodeMulaw, dtmfAudio } from "../server/speech/audio";
 import { ringAudio } from "./ringback-fixture";
 
 test("ringback requires matching tone frequencies and a complete cadence", () => {
@@ -53,6 +53,20 @@ test("ringback rejects keypad tones, voicemail beeps, busy cadence, constant ton
   ];
   for (const audio of examples)
     assert.equal(new RingbackDetector().push(audio), undefined);
+});
+
+test("ringback tolerates frame offsets, modest frequency drift and low background noise", () => {
+  for (const drift of [0.99, 1.01]) {
+    const audio = Buffer.concat([
+      Buffer.alloc(137, 255),
+      ringAudio([440 * drift, 480 * drift], 1957, 3971),
+    ]);
+    for (let i = 0; i < audio.length; i++)
+      audio[i] = encodeMulaw(
+        decodeMulaw(audio[i]) + Math.round(150 * Math.sin(i * i)),
+      );
+    assert.equal(new RingbackDetector().push(audio)?.profile, "north-america");
+  }
 });
 
 test("speech or music in the gap and a reset prevent a stale tone from completing a ring cadence", () => {

@@ -37,7 +37,7 @@ export class RingbackDetector {
     },
   ) {
     this.coefficients = new Map(
-      [425, 440, 480].map((hz) => [
+      [420, 425, 430, 435, 440, 445, 475, 480, 485].map((hz) => [
         hz,
         2 * Math.cos((2 * Math.PI * hz) / format.sampleRate),
       ]),
@@ -93,7 +93,9 @@ export class RingbackDetector {
     const profile = quiet
       ? undefined
       : profiles.find((p) => {
-          const bands = p.frequencies.map(power);
+          const bands = p.frequencies.map((hz) =>
+            Math.max(power(hz - 5), power(hz), power(hz + 5)),
+          );
           return (
             bands.every((value) => value > (bands.length === 1 ? 0.85 : 0.2)) &&
             bands.reduce((sum, value) => sum + value, 0) > 0.8

@@ -305,3 +305,27 @@ test("maximum call duration still ends a call even while transfer wait has time 
   t.mock.timers.tick(30000);
   assert.deepEqual(h.ended, ["max-duration"]);
 });
+
+test("voicemail greeting grace includes the short pause before its beep", () => {
+  const h = new CallHandling(
+    agent({
+      voicemailDetection: {
+        enabled: true,
+        action: "leave-message",
+        message: "Call back",
+        beepWaitSeconds: 3,
+      },
+    }),
+    new CallTrace("CA-delayed-beep"),
+    true,
+    true,
+    0,
+  );
+  h.observe("Please leave your message after the beep", false, 0);
+  h.audio(true, 2900);
+  assert.equal(h.tick(3000).action, "none");
+  h.observe("Please leave your message after the beep. Thank you.", true, 5000);
+  assert.equal(h.tick(5000).action, "none");
+  assert.equal(h.tick(6000).action, "none");
+  assert.equal(h.beep(6200).action, "leave-message");
+});
